@@ -1,6 +1,6 @@
 # @@@LICENSE
 #
-#      Copyright (c) 2010-2013 LG Electronics, Inc.
+#      Copyright (c) 2010-2012 Hewlett-Packard Development Company, L.P.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,25 +16,6 @@
 #
 # LICENSE@@@
 
+include_directories(.)
 
-if(MODULE_SYSTEM_WEBOS_LINUX)
-    add_subdirectory(system)
-    add_subdirectory(battery)
-    add_subdirectory(charger)
-endif()
-
-if(MODULE_TOUCHPANEL_WEBOS_LINUX)
-    add_subdirectory(touchpanel)
-endif()
-
-if(MODULE_KEYS_WEBOS_LINUX)
-    add_subdirectory(keys)
-endif()
-
-if(MODULE_ALS_WEBOS_LINUX_TUNA)
-    add_subdirectory(als_tuna)
-endif()
-
-if(MODULE_LED_CONTROLLER_WEBOS_LINUX)
-    add_subdirectory(led_controller)
-endif()
+nyx_create_module(MicroControllerLEDsDefault led_controller.c)
