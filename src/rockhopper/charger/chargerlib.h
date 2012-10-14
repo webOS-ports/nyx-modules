@@ -20,6 +20,7 @@
 #define CHARGER_H_
 
 nyx_error_t _charger_init(void);
+void _charger_close(void);
 nyx_error_t _charger_read_status(nyx_charger_status_t *status);
 nyx_error_t _charger_enable_charging(nyx_charger_status_t *status);
 nyx_error_t _charger_disable_charging(nyx_charger_status_t *status);
