@@ -32,20 +32,13 @@
 #include <nyx/nyx_module.h>
 #include <nyx/module/nyx_utils.h>
 
-static nyx_device_t *nyxDev = NULL;
-static void *charger_status_callback_context = NULL,
-             *state_change_callback_context = NULL;
-static nyx_device_callback_function_t charger_status_callback,
-       state_change_callback;
-static nyx_charger_event_t current_event = NYX_NO_NEW_EVENT;
+#include "chargerlib.h"
 
-nyx_charger_status_t gChargerStatus =
-{
-	.charger_max_current = 0,
-	.connected = 0,
-	.powered = 0,
-	.dock_serial_number = {0},
-};
+nyx_device_t *nyxDev=NULL;
+void *charger_status_callback_context = NULL;
+void *state_change_callback_context = NULL;
+nyx_device_callback_function_t charger_status_callback;
+nyx_device_callback_function_t state_change_callback;
 
 NYX_DECLARE_MODULE(NYX_DEVICE_CHARGER, "Charger");
 
@@ -88,10 +81,9 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
 	                           NYX_CHARGER_QUERY_CHARGER_EVENT_MODULE_METHOD,
 	                           "charger_query_charger_event");
 
-
 	*d = (nyx_device_t *)nyxDev;
 
-	return NYX_ERROR_NONE;
+	return _charger_init();
 }
 
 nyx_error_t nyx_module_close(nyx_device_t *d)
@@ -112,13 +104,10 @@ nyx_error_t charger_query_charger_status(nyx_device_handle_t handle,
 		return NYX_ERROR_INVALID_VALUE;
 	}
 
-	memcpy(status, &gChargerStatus, sizeof(nyx_charger_status_t));
-	return NYX_ERROR_NONE;
-
+	return _charger_read_status(status);
 }
 
-
-nyx_error_t charger_register_charger_status_callback(nyx_device_handle_t handle,
+nyx_error_t charger_register_charger_status_callback (nyx_device_handle_t handle,
         nyx_device_callback_function_t callback_func, void *context)
 {
 	if (handle != nyxDev)
@@ -150,8 +139,7 @@ nyx_error_t charger_enable_charging(nyx_device_handle_t handle,
 		return NYX_ERROR_INVALID_VALUE;
 	}
 
-	memcpy(status, &gChargerStatus, sizeof(nyx_charger_status_t));
-	return NYX_ERROR_NONE;
+	return _charger_enable_charging(status);
 }
 
 nyx_error_t charger_disable_charging(nyx_device_handle_t handle,
@@ -167,8 +155,7 @@ nyx_error_t charger_disable_charging(nyx_device_handle_t handle,
 		return NYX_ERROR_INVALID_VALUE;
 	}
 
-	memcpy(status, &gChargerStatus, sizeof(nyx_charger_status_t));
-	return NYX_ERROR_NONE;
+	return _charger_disable_charging(status);
 }
 
 nyx_error_t charger_register_state_change_callback(nyx_device_handle_t handle,
@@ -198,10 +185,5 @@ nyx_error_t charger_query_charger_event(nyx_device_handle_t handle,
 		return NYX_ERROR_INVALID_HANDLE;
 	}
 
-	*event = current_event;
-
-	current_event = NYX_NO_NEW_EVENT;
-
-	return NYX_ERROR_NONE;
+	return _charger_query_charger_event(event);
 }
-
