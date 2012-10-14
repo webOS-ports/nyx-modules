@@ -88,6 +88,7 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
 
 nyx_error_t nyx_module_close(nyx_device_t *d)
 {
+	_charger_close();
 	return NYX_ERROR_NONE;
 }
 
