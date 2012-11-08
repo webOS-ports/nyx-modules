@@ -104,34 +104,31 @@ static int FileWriteInt(const char *path, int value)
 static nyx_error_t handle_backlight_effect(nyx_device_handle_t handle, nyx_led_controller_effect_t effect)
 {
     int max_brightness;
-    int value, power;
+    int value, display_enabled;
 
     switch(effect.required.effect)
     {
     case NYX_LED_CONTROLLER_EFFECT_LED_SET:
-        if (FileGetInt(DISPLAY_SYSFS_PATH "bl_power", &power) < 0)
+        if (FileGetInt(DISPLAY_SYSFS_PATH "enabled", &display_enabled) < 0)
             return NYX_ERROR_DEVICE_UNAVAILABLE;
 
-        if (FileGetInt(DISPLAY_SYSFS_PATH "max_brightness", &max_brightness) < 0)
+        if (FileGetInt(BACKLIGHT_SYSFS_PATH "max_brightness", &max_brightness) < 0)
             return NYX_ERROR_DEVICE_UNAVAILABLE;
 
-        value = (int)(100.0 / max_brightness * effect.backlight.brightness_lcd);
+        value = (int)((max_brightness * effect.backlight.brightness_lcd) / 100.0);
 
-        if (power == 0 && value > 0)
+        if (display_enabled == 0 && value > 0)
         {
-            /* activate display when it's powered off and we want to set some brightness
-             * greater than zero */
-            if (FileWriteInt(DISPLAY_SYSFS_PATH "bl_power", 1) < 0)
+            if (FileWriteInt(DISPLAY_SYSFS_PATH "enabled", 1) < 0)
                 return NYX_ERROR_DEVICE_UNAVAILABLE;
         }
-        else if (power== 1 && value <= 0)
+        else if (display_enabled == 1 && value <= 0)
         {
-            /* Otherwise deactivate display when brightness should be set to zero */
-            if (FileWriteInt(DISPLAY_SYSFS_PATH "bl_power", 0) < 0)
+            if (FileWriteInt(DISPLAY_SYSFS_PATH "enabled", 0) < 0)
                 return NYX_ERROR_DEVICE_UNAVAILABLE;
         }
 
-        if (FileWriteInt(DISPLAY_SYSFS_PATH "brightness", value) < 0)
+        if (FileWriteInt(BACKLIGHT_SYSFS_PATH "brightness", value) < 0)
             return NYX_ERROR_DEVICE_UNAVAILABLE;
 
         break;
