@@ -26,4 +26,5 @@ set(MODULE_LED_CONTROLLER_WEBOS_LINUX		YES)
 
 add_definitions(-DKEYPAD_INPUT_DEVICE=\"/dev/input/event2\")
 add_definitions(-DBATTERY_SYSFS_PATH=\"/sys/class/power_supply/battery/\")
-add_definitions(-DDISPLAY_SYSFS_PATH=\"/sys/class/backlight/s6e8aa0/\")
+add_definitions(-DDISPLAY_SYSFS_PATH=\"/sys/devices/omapdss/display0/\")
+add_definitions(-DBACKLIGHT_SYSFS_PATH=\"/sys/class/backlight/s6e8aa0/\")
