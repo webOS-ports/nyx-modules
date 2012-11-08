@@ -128,8 +128,11 @@ static nyx_error_t handle_backlight_effect(nyx_device_handle_t handle, nyx_led_c
                 return NYX_ERROR_DEVICE_UNAVAILABLE;
         }
 
-        if (FileWriteInt(BACKLIGHT_SYSFS_PATH "brightness", value) < 0)
-            return NYX_ERROR_DEVICE_UNAVAILABLE;
+        if (display_enabled == 1)
+        {
+            if (FileWriteInt(BACKLIGHT_SYSFS_PATH "brightness", value) < 0)
+                return NYX_ERROR_DEVICE_UNAVAILABLE;
+        }
 
         break;
     default:
