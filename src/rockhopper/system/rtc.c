@@ -161,14 +161,18 @@ static gboolean
 */
 
 static GIOChannel *rtc_channel = NULL;
+static guint rtc_watch;
 
 bool
 	rtc_add_watch(RtcAlarmFunc func)
 {
 #if DEV_RTC_IMPLEMENTED
-	rtc_channel = g_io_channel_unix_new(rtc_fd);
-	g_io_add_watch(rtc_channel, G_IO_IN, rtc_event, func);
-	g_io_channel_unref(rtc_channel);
+	if (!rtc_channel)
+    {
+		rtc_channel = g_io_channel_unix_new(rtc_fd);
+		rtc_watch = g_io_add_watch(rtc_channel, G_IO_IN, rtc_event, func);
+		g_io_channel_unref(rtc_channel);
+	}
 	return true;
 #else
 	return false;
@@ -182,6 +186,10 @@ bool
 	if(rtc_channel) 
 	{
 		g_io_channel_shutdown(rtc_channel,true,NULL);
+		rtc_channel = NULL;
+
+		g_source_remove(rtc_watch);
+
 		rtc_close();
 	}
 	return true;
