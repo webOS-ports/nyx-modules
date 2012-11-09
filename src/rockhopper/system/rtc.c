@@ -171,6 +171,7 @@ rtc_event(GIOChannel *source, GIOCondition condition, gpointer ctx)
 */
 
 static GIOChannel *rtc_channel = NULL;
+static guint rtc_watch;
 
 bool
 rtc_add_watch(RtcAlarmFunc func)
@@ -180,7 +181,7 @@ rtc_add_watch(RtcAlarmFunc func)
 	if (rtc_channel == NULL)
 	{
 		rtc_channel = g_io_channel_unix_new(rtc_fd);
-		g_io_add_watch(rtc_channel, G_IO_IN, rtc_event, func);
+		rtc_watch = g_io_add_watch(rtc_channel, G_IO_IN, rtc_event, func);
 		g_io_channel_unref(rtc_channel);
 	}
 
@@ -199,6 +200,9 @@ rtc_clear_watch(void)
 	{
 		g_io_channel_shutdown(rtc_channel, true, NULL);
 		rtc_channel = NULL;
+
+		g_source_remove(rtc_watch);
+
 		rtc_close();
 	}
 
