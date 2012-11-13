@@ -218,6 +218,10 @@ void battery_read_init(void)
 	system("sh /usr/sbin/fake_battery_values.sh");
 }
 
+void battery_read_close(void)
+{
+}
+
 bool battery_authenticate(void)
 {
         return true;

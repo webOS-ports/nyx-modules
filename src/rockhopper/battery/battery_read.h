@@ -37,5 +37,6 @@ double battery_age(void);
 bool battery_is_present(void);
 bool battery_is_authenticated(const char *pair_challenge, const char *pair_response);
 void battery_read_init(void);
+void battery_read_close(void);
 
 #endif /* _BATTERY_READ_H_ */

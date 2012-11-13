@@ -55,6 +55,8 @@ GIOChannel *channel;
 struct udev *udev;
 struct udev_monitor *mon;
 
+static guint event_watch;
+
 extern nyx_device_t *nyxDev;
 extern void *battery_callback_context;
 extern nyx_device_callback_function_t battery_callback;
@@ -267,7 +269,25 @@ void battery_read_init(void)
     fd = udev_monitor_get_fd(mon);
 
     channel = g_io_channel_unix_new(fd);
-    g_io_add_watch(channel, G_IO_IN | G_IO_HUP | G_IO_NVAL, _handle_event, NULL);
+    event_watch = g_io_add_watch(channel, G_IO_IN | G_IO_HUP | G_IO_NVAL, _handle_event, NULL);
+}
+
+void battery_read_close(void)
+{
+    if (channel) {
+        g_io_channel_shutdown(channel, NULL, NULL);
+        channel = NULL;
+
+        g_source_remove(event_watch);
+    }
+
+    if (mon) {
+        udev_monitor_unref(mon);
+    }
+
+    if (udev) {
+        udev_unref(udev);
+    }
 }
 
 bool battery_is_authenticated(const char *pair_challenge, const char *pair_response)
