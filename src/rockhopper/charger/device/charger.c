@@ -56,6 +56,7 @@ nyx_charger_status_t gChargerStatus =
 };
 
 static nyx_charger_event_t current_event = NYX_NO_NEW_EVENT;
+static guint event_watch;
 
 gboolean _handle_power_supply_event(GIOChannel *channel, GIOCondition condition, gpointer data)
 {
@@ -89,9 +90,27 @@ nyx_error_t _charger_init(void)
 	fd = udev_monitor_get_fd(mon);
 
 	channel = g_io_channel_unix_new(fd);
-	g_io_add_watch(channel, G_IO_IN | G_IO_HUP | G_IO_NVAL, _handle_power_supply_event, NULL);
+	event_watch = g_io_add_watch(channel, G_IO_IN | G_IO_HUP | G_IO_NVAL, _handle_power_supply_event, NULL);
 
 	return NYX_ERROR_NONE;
+}
+
+void _charger_close(void)
+{
+	if (channel) {
+		g_io_channel_shutdown(channel, NULL, NULL);
+		channel = NULL;
+
+		g_source_remove(event_watch);
+	}
+
+	if (mon) {
+		udev_monitor_unref(mon);
+	}
+
+	if (udev) {
+		udev_unref(udev);
+	}
 }
 
 nyx_error_t _charger_read_status(nyx_charger_status_t *status)

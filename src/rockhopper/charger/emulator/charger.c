@@ -46,6 +46,10 @@ nyx_error_t _charger_init(void)
 	return NYX_ERROR_NONE;
 }
 
+void _charger_close(void)
+{
+}
+
 nyx_error_t _charger_read_status(nyx_charger_status_t *status)
 {
 	memcpy(status, &gChargerStatus, sizeof(nyx_charger_status_t));
