@@ -216,6 +216,9 @@ init_touchpanel(void)
 
 	scaleX = (float)scr_info.xres / (float)maxX;
 	scaleY = (float)scr_info.yres / (float)maxY;
+
+	nyx_warn("[touchpanel] scr_info.xres = %d, yres = %d", scr_info.xres, scr_info.yres);
+
 #else
 	scaleX = (float)SCREEN_HORIZONTAL_RES / (float)maxX;
 	scaleY = (float)SCREEN_VERTICAL_RES / (float)maxY;
@@ -360,16 +363,28 @@ generate_mouse_gesture(int touchButtonState)
 static void handle_new_event(input_event_t *event)
 {
 	static int touchButtonState = 0;
+	static int trackingContactID = -1;
+
+	nyx_debug("[touchpanel] ABS=%d, KEY=%d,SYN=%d", EV_ABS, EV_KEY, EV_SYN);
+	nyx_debug("[touchpanel] event->type = %d, event->code = %d", event->type, event->code);
 
 	// Truncate scaled X & Y coordinate values
 	if ((event->type == EV_ABS) && (event->code == ABS_X))
 			cachedX = (int) (event->value * scaleX);
-	
 	else if ((event->type == EV_ABS) && (event->code == ABS_Y))
 			cachedY = (int) (event->value * scaleY);
-	
+
+	else if ((event->type == EV_ABS) && (event->code == ABS_MT_TRACKING_ID))
+	{
+		trackingContactID = (int) (event->value);
+	}
+
+	else if ((event->type == EV_ABS) && (event->code == ABS_MT_POSITION_X))
+		cachedX = (int) (event->value * scaleX);
+	else if ((event->type == EV_ABS) && (event->code == ABS_MT_POSITION_Y))
+		cachedY = (int) (event->value * scaleY);
 	else if ((event->type == EV_KEY) && (event->code == BTN_TOUCH))
-	{	
+	{
             // save touchButtonState (up or down)
 		touchButtonState = event->value;
 	        if (touchButtonState == 0)
@@ -382,11 +397,46 @@ static void handle_new_event(input_event_t *event)
 	        	generate_mouse_gesture(1);
          	}
 	 }
-	 else if (event->type == EV_SYN)
+	 else if (event->type == EV_SYN && event->code == SYN_REPORT && trackingContactID == 0)
 	 {
 	       	generate_mouse_gesture(touchButtonState);
 	 }
-	
+	 else if (event->type == EV_SYN && event->code == SYN_MT_REPORT)
+	{
+		/*
+		 * For multitouch, two SYN_MT_REPORT are reported: first one means that the current
+	 	 * pressure event has been transmitted, and an immediate second one means that
+		 * the gesture is finished.
+		 */
+		if( trackingContactID != -1 )
+		{
+			/* pressure information has been reported */
+			if( touchButtonState == 0 )
+			{
+				/* gesture begins */
+				touchButtonState = 1;
+				generate_mouse_gesture(touchButtonState);
+			}
+			else
+			{
+				/* gesture continues: right now we do nothing, but we could log
+				 * that in the gesture event handler
+				 */
+				/* generate_mouse_gesture(touchButtonState); */
+			}
+
+			trackingContactID = -1; /* reset tracking ID, anyway we don't trace the gesture today */
+		}
+		else
+		{
+			/* no pressure information --> end of multi-touch gesture */
+			touchButtonState = 0;
+			generate_mouse_gesture(touchButtonState);
+		}
+	}
+
+	 nyx_debug("[touchpanel] cachedX = %d, cachedY = %d", cachedX, cachedY);
+
 	 if ((event->type == EV_REL && event->code == REL_WHEEL) ||
             (event->type == EV_KEY && (event->code == BTN_MIDDLE || event->code == BTN_SIDE ||
                                          event->code == BTN_EXTRA || event->code == BTN_FORWARD ||
