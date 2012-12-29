@@ -124,8 +124,10 @@ typedef struct finger
 void init_gesture_state_machine(const general_settings_t* pGeneralSettings,
                              int maxFingers);
 void deinit_gesture_state_machine(void);
-void gesture_state_machine(int* pXCoords,int* pYCoords, const int* pFingerWeights,
-                         int fingerCount, const time_stamp_t* pTime,
-                         input_event_t *events, int *numEvents);
+
+void gesture_state_machine_track(int* pXCoords,int* pYCoords, const int* pFingerWeights,
+                         int fingerCount, const time_stamp_t* pTime);
+
+void gesture_state_machine_process(const time_stamp_t* pTime, input_event_t *events, int *numEvents);
 
 #endif  /* __TOUCHPANEL_GESTURES_PRV_H */

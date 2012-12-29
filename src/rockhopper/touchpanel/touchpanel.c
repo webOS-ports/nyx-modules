@@ -34,6 +34,8 @@
 #include <errno.h>
 #include <poll.h>
 
+#include <mtdev.h>
+
 #include <nyx/nyx_module.h>
 #include <nyx/module/nyx_event_touchpanel_internal.h>
 #include <nyx/common/nyx_macros.h>
@@ -71,6 +73,26 @@ typedef struct  {
 	size_t input_read;
 	input_event_t input[MAX_HIDD_EVENTS];
 } event_list_t;
+
+typedef struct {
+	int touchMajor;
+	int touchMinor;
+	int widthMajor;
+	int widthMinor;
+	int orientation;
+	int posX;
+	int posY;
+	int tracking_id;
+	int previous_tracking_id;
+	struct finger_t *nyx_finger;
+} mt_slot_t;
+struct mtdev *ts_mtdev = NULL;
+/*
+ * Maximum number of slots that this driver can handle for multitouch.
+ * Since we have 10 fingers, it seems sensible to have a max of 10 slots.
+ */
+#define MAX_MT_SLOTS    10
+mt_slot_t *mt_slots = NULL;
 
 
 event_list_t touchpanel_event_list;
@@ -340,7 +362,7 @@ init_touchpanel(void)
 	struct input_absinfo abs;
 	int  maxX, maxY, sXres, sYres, ret = -1;
     	
-	touchpanel_event_fd = open("/dev/input/touchscreen0", O_RDWR);
+	touchpanel_event_fd = open("/dev/input/touchscreen0", O_RDWR | O_NONBLOCK);
 	if(touchpanel_event_fd < 0) {
 		nyx_error("Error in opening touchpanel event device");
 		return -1;
@@ -373,6 +395,21 @@ init_touchpanel(void)
 
 	scaleX = (float)sXres / (float)maxX;
 	scaleY = (float)sYres / (float)maxY;
+
+	/* initialize the mtdev instance for this touchscreen */
+	ts_mtdev = mtdev_new_open(touchpanel_event_fd);
+        if( ts_mtdev )
+	{
+		nyx_debug("[touchpanel] mtdev initialized.");
+		int iSlot = 0;
+	        mt_slots = (mt_slot_t *)calloc(sizeof(mt_slot_t), MAX_MT_SLOTS);
+		for( ; iSlot < MAX_MT_SLOTS; iSlot++ )
+		{
+			mt_slots[iSlot].tracking_id = -1;
+			mt_slots[iSlot].previous_tracking_id = -1;
+			mt_slots[iSlot].nyx_finger = -1;
+		}
+	}
 
 	return 0;
 error:
@@ -439,6 +476,16 @@ nyx_error_t nyx_module_close(nyx_device_t *d) {
 
         deinit_gesture_state_machine();
 	free(d);
+
+	if(ts_mtdev)
+	{
+		mtdev_close_delete(ts_mtdev);
+	}
+	if(mt_slots)
+	{
+		free(mt_slots);
+	}
+
  	
 	if(touchpanel_event_fd >= 0) {
                 close(touchpanel_event_fd);
@@ -497,7 +544,11 @@ generate_mouse_gesture(int touchButtonState)
     	yOrd[1] = 0;
     	wOrd[1] = 0;
 
-    	gesture_state_machine(xOrd, yOrd, wOrd, fingers, &eventTime,touchpanel_event_list.input,&num_events);
+	/* track this new coordinate */
+    	gesture_state_machine_track(xOrd, yOrd, wOrd, fingers, &eventTime);
+
+	/* process the modifications */
+	gesture_state_machine_process(&eventTime, touchpanel_event_list.input,&num_events);
     	touchpanel_event_list.input_filled=num_events * sizeof(input_event_t);
     	touchpanel_event_list.input_read=0;
 }
@@ -509,6 +560,72 @@ generate_mouse_gesture(int touchButtonState)
  */
 #define SYN_START       8
 
+static void handle_new_mt_event(input_event_t *event)
+{
+	static int currentSlot = 0;
+
+	/* safety check */
+	if ((NULL == ts_mtdev) || (NULL == mt_slots))
+		return;
+
+	nyx_debug("[touchpanel] ABS=%x KEY=%x,SYN=%x", EV_ABS, EV_KEY, EV_SYN);
+	nyx_debug("[touchpanel] event->type = %x, event->code = %x, event->value=%d", event->type, event->code, (int) (event->value));
+
+	/* if the current slot has changed, it should be the first thing we get */
+	if ((event->type == EV_ABS) && (event->code == ABS_MT_SLOT))
+		currentSlot = (int) (event->value);
+
+	/* if the current slot is not valid, then skip the event */
+	if( currentSlot < 0 || currentSlot >= MAX_MT_SLOTS )
+		return;
+
+	if ((event->type == EV_ABS) && (event->code == ABS_MT_TRACKING_ID))
+		mt_slots[currentSlot].tracking_id = (int) (event->value);
+
+        else if ((event->type == EV_ABS) && (event->code == ABS_MT_POSITION_X))
+                mt_slots[currentSlot].posX =  (int) (event->value * scaleX);
+
+        else if ((event->type == EV_ABS) && (event->code == ABS_MT_POSITION_Y))
+                mt_slots[currentSlot].posY = (int) (event->value * scaleY);
+
+	 else if (event->type == EV_SYN && event->code == SYN_REPORT)
+         {
+	        int num_events=0;
+	        time_stamp_t eventTime;
+	        get_time_stamp(&eventTime);
+
+		/* Now process all the changes */
+		int iSlot = 0;
+                for( ; iSlot < MAX_MT_SLOTS; iSlot++ )
+                {
+                        if((mt_slots[iSlot].tracking_id != -1) && (mt_slots[iSlot].previous_tracking_id == -1))
+			{
+				/* a new finger has appeared */
+				nyx_debug("[touchpanel] new finger");
+				mt_slots[iSlot].nyx_finger = add_new_finger(mt_slots[iSlot].posX, mt_slots[iSlot].posY, 1, &eventTime);
+				mt_slots[iSlot].previous_tracking_id = mt_slots[iSlot].tracking_id;
+			}
+			else if((mt_slots[iSlot].tracking_id == -1) && (mt_slots[iSlot].previous_tracking_id != -1))
+			{
+				/* a finger has been released */
+				nyx_debug("[touchpanel] release finger");
+				update_finger(mt_slots[iSlot].nyx_finger, mt_slots[iSlot].posX, mt_slots[iSlot].posY, 0, &eventTime);
+
+				mt_slots[iSlot].nyx_finger = NULL;
+				mt_slots[iSlot].previous_tracking_id = mt_slots[iSlot].tracking_id;
+			}
+			else if(mt_slots[iSlot].tracking_id != -1)
+			{
+				nyx_debug("[touchpanel] update finger");
+				/* simple move gesture */
+				update_finger(mt_slots[iSlot].nyx_finger, mt_slots[iSlot].posX, mt_slots[iSlot].posY, 1, &eventTime);
+			}
+                }
+
+		gesture_state_machine_process(&eventTime, touchpanel_event_list.input+touchpanel_event_list.input_filled/sizeof(input_event_t), &num_events);
+	        touchpanel_event_list.input_filled+=num_events * sizeof(input_event_t);
+         }
+}
 
 static void handle_new_event(input_event_t *event)
 {
@@ -517,10 +634,9 @@ static void handle_new_event(input_event_t *event)
 	// Truncate scaled X & Y coordinate values
 	if ((event->type == EV_ABS) && (event->code == ABS_X))
 			cachedX = (int) (event->value * scaleX);
-	
+		
 	else if ((event->type == EV_ABS) && (event->code == ABS_Y))
 			cachedY = (int) (event->value * scaleY);
-	
 	// qemu touchpanel sends BTN_TOUCH, virtualbox touchpanel sends BTN_LEFT
 	else if ((event->type == EV_KEY) && ((event->code == BTN_TOUCH) || (event->code == BTN_LEFT)))
 	{	
@@ -536,11 +652,13 @@ static void handle_new_event(input_event_t *event)
 	        	generate_mouse_gesture(1);
          	}
 	 }
-	 else if (event->type == EV_SYN)
+	 else if (event->type == EV_SYN && event->code == SYN_REPORT)
 	 {
 	       	generate_mouse_gesture(touchButtonState);
 	 }
 	
+        nyx_debug("[touchpanel] cachedX = %d, cachedY = %d", cachedX, cachedY);
+
 	 if ((event->type == EV_REL && event->code == REL_WHEEL) ||
             (event->type == EV_KEY && (event->code == BTN_MIDDLE || event->code == BTN_SIDE ||
                                          event->code == BTN_EXTRA || event->code == BTN_FORWARD ||
@@ -572,24 +690,44 @@ read_input_event(void)
 	fds[0].fd = touchpanel_event_fd;
 	fds[0].events = POLLIN;
 
-	int ret_val = poll(fds,1,0);
-	if(ret_val <= 0)
+	/* read events through mtdev (which can also handle singletouch events) */
+	if( ts_mtdev )
 	{
-    		return 0;
-	}
+		touchpanel_event_list.input_filled=0;
+        	touchpanel_event_list.input_read=0;
 
-	if(fds[0].revents & POLLIN) {
-		rd = read(fds[0].fd, &pEvent, sizeof(input_event_t));
-
-		if (rd<0 && errno!=EINTR)
+		if( !mtdev_idle(ts_mtdev, touchpanel_event_fd, 0 ) )
 		{
-			nyx_error("Failed to read events from keypad event file");
-			return -1;
+			while( mtdev_get(ts_mtdev, touchpanel_event_fd, (struct input_event *)&pEvent, 1) > 0 )
+			{
+				numEvents++;
+				handle_new_mt_event(&pEvent);
+			}
+		}
+	}
+	else
+	{
+		/* Fallback on singletouch handling it no mtdev is present */
+		int ret_val = poll(fds,1,0);
+		if(ret_val <= 0)
+		{
+	    		return 0;
 		}
 
-		handle_new_event(&pEvent);
-    	}
-    	return numEvents;
+		if(fds[0].revents & POLLIN) {
+			rd = read(fds[0].fd, &pEvent, sizeof(input_event_t));
+
+			if (rd<0 && errno!=EINTR)
+			{
+				nyx_error("Failed to read events from keypad event file");
+				return -1;
+			}
+
+			handle_new_event(&pEvent);
+	    	}
+	}
+    	
+	return numEvents;
 }
 
 nyx_error_t touchpanel_get_event(nyx_device_t* d, nyx_event_t** e)

@@ -52,6 +52,10 @@ pkg_check_modules(LIBCRYPTO REQUIRED libcrypto)
 include_directories(${LIBCRYPTO_INCLUDE_DIRS})
 webos_add_compiler_flags(ALL ${LIBCRYPTO_CFLAGS_OTHER})
 
+pkg_check_modules(MTDEV REQUIRED mtdev)
+include_directories(${MTDEV_INCLUDE_DIRS})
+webos_add_compiler_flags(ALL ${MTDEV_CFLAGS_OTHER})
+
 webos_add_linker_options(ALL --no-undefined --as-needed)
 webos_add_compiler_flags(ALL -Wall -g -std=c99)
 webos_add_compiler_flags(ALL -D_GNU_SOURCE=1)
@@ -91,7 +95,7 @@ endif()
 
 macro(nyx_create_module module)
 	add_library(${module} MODULE ${ARGN})
-	target_link_libraries(${module} ${GLIB2_LDFLAGS} ${GIO_LDFLAGS} ${UDEV_LDFLAGS} ${NYXLIB_LDFLAGS} -lrt -lpthread)
+	target_link_libraries(${module} ${GLIB2_LDFLAGS} ${GIO_LDFLAGS} ${UDEV_LDFLAGS} ${NYXLIB_LDFLAGS} ${MTDEV_LDFLAGS} -lrt -lpthread)
 	install(TARGETS ${module} DESTINATION ${NYX_MODULE_DIR})
 endmacro()
 
