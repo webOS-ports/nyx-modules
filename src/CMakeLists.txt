@@ -95,7 +95,7 @@ endif()
 
 macro(nyx_create_module module)
 	add_library(${module} MODULE ${ARGN})
-	target_link_libraries(${module} ${GLIB2_LDFLAGS} ${GIO_LDFLAGS} ${UDEV_LDFLAGS} ${NYXLIB_LDFLAGS} ${MTDEV_LDFLAGS} -lrt -lpthread)
+	target_link_libraries(${module} ${GLIB2_LDFLAGS} ${GIO_LDFLAGS} ${UDEV_LDFLAGS} ${NYXLIB_LDFLAGS} ${MTDEV_LDFLAGS} -lm -lrt -lpthread)
 	install(TARGETS ${module} DESTINATION ${NYX_MODULE_DIR})
 endmacro()
 
