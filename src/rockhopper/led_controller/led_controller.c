@@ -199,27 +199,32 @@ static nyx_error_t handle_backlight_effect(nyx_device_handle_t handle, nyx_led_c
 {
     int max_brightness, brightness;
     int value, display_enabled;
+    nyx_callback_status_t status = NYX_CALLBACK_STATUS_DONE;
 
     switch(effect.required.effect)
     {
     case NYX_LED_CONTROLLER_EFFECT_LED_SET:
-        if (FileGetInt(backlight_max_brightness_path, &max_brightness) < 0)
-            return NYX_ERROR_DEVICE_UNAVAILABLE;
+        if (FileGetInt(backlight_max_brightness_path, &max_brightness) < 0) {
+            status = NYX_CALLBACK_STATUS_FAILED;
+            goto done;
+        }
 
         value = 0;
         if (effect.backlight.brightness_lcd >= 0)
             value = (int)((max_brightness * effect.backlight.brightness_lcd) / 100.0);
 
-        if (FileWriteInt(backlight_brightness_path, value) < 0)
-            return NYX_ERROR_DEVICE_UNAVAILABLE;
+        if (FileWriteInt(backlight_brightness_path, value) < 0) {
+            status = NYX_CALLBACK_STATUS_FAILED;
+            goto done;
+        }
 
         break;
     default:
         break;
     }
 
-    effect.backlight.callback(handle, NYX_CALLBACK_STATUS_DONE,
-                                  effect.backlight.callback_context);
+done:
+    effect.backlight.callback(handle, status, effect.backlight.callback_context);
 
     return NYX_ERROR_NONE;
 }
