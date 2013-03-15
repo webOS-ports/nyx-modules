@@ -103,3 +103,5 @@ add_subdirectory(generic)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${WEBOS_TARGET_CORE_OS}")
 	add_subdirectory(${WEBOS_TARGET_CORE_OS})
 endif()
+
+add_subdirectory(tests)
