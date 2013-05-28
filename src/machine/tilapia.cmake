@@ -16,16 +16,13 @@
 #
 # LICENSE@@@
 
-# configuration file for tuna.
+# configuration file for grouper.
 # specify all the modules to be compiled
 
 set(MODULE_SYSTEM_WEBOS_LINUX			YES)
 set(MODULE_KEYS_WEBOS_LINUX			YES)
 set(MODULE_TOUCHPANEL_WEBOS_LINUX		YES)
 set(MODULE_LED_CONTROLLER_WEBOS_LINUX		YES)
-set(MODULE_ALS_WEBOS_LINUX_TUNA			YES)
-set(MODULE_HAPTICS_TIMEDOUTPUT_WEBOS_LINUX		YES)
 
 add_definitions(-DKEYPAD_INPUT_DEVICE=\"/dev/input/event2\")
 add_definitions(-DBATTERY_SYSFS_PATH=\"/sys/class/power_supply/battery/\")
-add_definitions(-DALS_INPUT_DEVICE=\"/dev/input/event4\")
