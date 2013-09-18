@@ -320,7 +320,7 @@ static general_settings_t sGeneralSettings =
 	.fingerDownThreshold = 0
 };
 
-#define FRAMEBUF_DEVICE_NAME    "/dev/fb"
+#define FRAMEBUF_DEVICE_NAME    "/dev/fb0"
 
 static int
 get_display_res(int *x, int *y)
