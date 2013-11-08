@@ -26,3 +26,4 @@ set(MODULE_LED_CONTROLLER_WEBOS_LINUX		YES)
 
 add_definitions(-DKEYPAD_INPUT_DEVICE=\"/dev/input/event1\")
 add_definitions(-DBATTERY_SYSFS_PATH=\"/sys/class/power_supply/battery/\")
+add_definitions(-DTOUCHPANEL_DEVICE=\"/dev/input/event2\")
