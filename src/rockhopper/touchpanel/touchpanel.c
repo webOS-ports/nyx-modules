@@ -361,7 +361,11 @@ init_touchpanel(void)
 	struct input_absinfo abs;
 	int  maxX, maxY, sXres, sYres, ret = -1;
 
+#ifdef TOUCHPANEL_DEVICE
+	touchpanel_event_fd = open(TOUCHPANEL_DEVICE, O_RDWR);
+#else
 	touchpanel_event_fd = open("/dev/input/touchscreen0", O_RDWR);
+#endif
 
 	if (touchpanel_event_fd < 0)
 	{
