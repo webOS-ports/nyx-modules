@@ -51,6 +51,10 @@ pkg_check_modules(LIBCRYPTO REQUIRED libcrypto)
 include_directories(${LIBCRYPTO_INCLUDE_DIRS})
 webos_add_compiler_flags(ALL ${LIBCRYPTO_CFLAGS_OTHER})
 
+pkg_check_modules(MTDEV REQUIRED mtdev)
+include_directories(${MTDEV_INCLUDE_DIRS})
+webos_add_compiler_flags(ALL ${MTDEV_CFLAGS_OTHER})
+
 webos_add_linker_options(ALL --no-undefined --as-needed)
 webos_add_compiler_flags(ALL -Wall -g -std=c99)
 webos_add_compiler_flags(ALL -D_GNU_SOURCE=1)
