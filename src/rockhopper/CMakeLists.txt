@@ -27,7 +27,7 @@ if(MODULE_TOUCHPANEL_WEBOS_LINUX)
     add_subdirectory(touchpanel)
 endif()
 
-if(MODULE_TOUCHPANEL_MTDEV__WEBOS_LINUX)
+if(MODULE_TOUCHPANEL_MTDEV_WEBOS_LINUX)
     add_subdirectory(touchpanel_mtdev)
 endif()
 
