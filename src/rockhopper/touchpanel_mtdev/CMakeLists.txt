@@ -17,3 +17,6 @@
 # LICENSE@@@
 
 nyx_create_module(TouchpanelMain touchpanel_common.c touchpanel_gestures.c touchpanel.c)
+target_link_libraries(TouchpanelMain${GLIB2_LDFLAGS} ${GIO_LDFLAGS} ${UDEV_LDFLAGS}
+									${NYXLIB_LDFLAGS} ${MTDEV_LDFLAGS} -lm -lrt -lpthread)
+
