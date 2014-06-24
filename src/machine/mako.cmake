@@ -24,8 +24,5 @@ set(MODULE_KEYS_WEBOS_LINUX			YES)
 set(MODULE_TOUCHPANEL_WEBOS_LINUX		NO)
 set(MODULE_TOUCHPANEL_MTDEV_WEBOS_LINUX		YES)
 
-# TODO we also need support for a second keypad input device (/dev/input/event1 is for
-# reporting the volume key events)
-add_definitions(-DKEYPAD_INPUT_DEVICE=\"/dev/input/event0\")
 add_definitions(-DBATTERY_SYSFS_PATH=\"/sys/class/power_supply/battery/\")
 add_definitions(-DTOUCHPANEL_DEVICE=\"/dev/input/event2\")
