@@ -96,7 +96,7 @@ void *notifier_thread_func(void *user_data)
     }
 
     while (1) {
-        int ret_val = poll(fds, num_keypad_event_fd, 0);
+        int ret_val = poll(fds, num_keypad_event_fd, -1);
         if (ret_val <= 0)
             continue;
 
