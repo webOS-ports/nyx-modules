@@ -21,7 +21,9 @@ webos_machine_impl_dep()
 webos_core_os_dep()
 
 # By default specify all modules to be compiled
-set(MODULE_SYSTEM_WEBOS_LINUX     YES CACHE BOOL "Include 'system' modules")
+set(MODULE_SYSTEM_WEBOS_LINUX     YES CACHE BOOL "Include 'system' module")
+set(MODULE_BATTERY_WEBOS_LINUX     YES CACHE BOOL "Include 'battery' module")
+set(MODULE_CHARGER_WEBOS_LINUX     YES CACHE BOOL "Include 'charger' module")
 set(MODULE_KEYS_WEBOS_LINUX       YES CACHE BOOL "Include 'keys' module")
 set(MODULE_TOUCHPANEL_WEBOS_LINUX YES CACHE BOOL "Include 'touchpanel' module")
 set(MODULE_GENERIC_OS_INFO        YES CACHE BOOL "Include generic 'OSInfo' module")

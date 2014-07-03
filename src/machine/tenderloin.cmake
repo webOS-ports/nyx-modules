@@ -16,10 +16,12 @@
 #
 # LICENSE@@@
 
-# configuration file for mako
+# configuration file for tenderloin
 # specify all the modules to be compiled
 
-set(MODULE_SYSTEM_WEBOS_LINUX			YES)
+set(MODULE_SYSTEM_WEBOS_LINUX		NO)
+set(MODULE_BATTERY_WEBOS_LINUX		YES)
+set(MODULE_CHARGER_WEBOS_LINUX		YES)
 set(MODULE_KEYS_WEBOS_LINUX			YES)
 set(MODULE_TOUCHPANEL_WEBOS_LINUX		NO)
 set(MODULE_TOUCHPANEL_MTDEV_WEBOS_LINUX		YES)
