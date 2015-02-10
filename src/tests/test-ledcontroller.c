@@ -40,13 +40,14 @@ typedef struct __Command_Line_Options__
 Option_help help_strings[] =
 {
 	{ 'h' , "-h,--help...........- Print this help menu" },
-	{ 'd' , "-d,--device.........- required_argument - name of led device [backlight,centre]" },
+	{ 'd' , "-d,--device.........- required_argument - name of led device [backlight,center]" },
 	{ 'e' , "-e,--effect.........- required_argument - [ set_brightness,pulsate]" },
 	{ 'p' , "-p,--param..........- params for each led; comma separated params in format var=value\n" 
 			"                      ..........  i.e param1=value1,param2=value2,param3=value3.\n"
 			"                      ..........  The required params are specified below:\n"
 			"                      ..........  1) set_brightness : brightness(level 0 - 255)\n"
-			"                      ..........  2) pulsate : fade_on(in milli-sec),fade_off(in milli-sec)\n" },
+			"                      ..........  2) pulsate : brightness(level 0 - 255)\n"
+			"                      ..........             : fade_on(milli-sec),fade_off(milli-sec)\n" },
 	{ '0' , NULL }
 };
 
@@ -362,7 +363,7 @@ static int map_led_device(char *led , nyx_led_controller_effect_t *effect)
 		effect->backlight.callback = led_controller_cb;
 		effect->backlight.callback_context = NULL;
 	}
-	else if( strcmp(led , "centre") == 0 )
+	else if( strcmp(led , "center") == 0 )
 	{
 		effect->required.led = NYX_LED_CONTROLLER_CENTER_LED ;
 	}
@@ -443,7 +444,7 @@ static int map_led_effect(char *param , nyx_led_controller_effect_t *effect)
 				case NYX_LED_CONTROLLER_EFFECT_LED_PULSATE :
 					break ;
 				default : 
-					g_error("currently only set_brightness,pulsate allowed for centre_led");
+					g_error("currently only set_brightness,pulsate allowed for center led");
 					err = -1 ;
 					goto err_led_effect_map ;
 			}
