@@ -88,7 +88,7 @@ void led_controller_cb(nyx_device_handle_t device,
 int main(int argc, char **argv)
 {
 	int err = 0 ;
-	nyx_device_handle_t *leddevice;
+	nyx_device_handle_t leddevice = NULL;
 	nyx_error_t error;
 	nyx_led_controller_effect_t effect;
 
