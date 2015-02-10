@@ -16,13 +16,14 @@
 #
 # LICENSE@@@
 
-set (CMAKE_SHARED_MODULE_PREFIX "nyx")
-set (CMAKE_SHARED_MODULE_SUFFIX ".module")
-# Use multiarch paths
-if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-set (NYX_MODULE_DIR "/lib/aarch64-linux-gnu/nyx/modules")
-set (NYX_MODULE_MOCK_DIR "/lib/aarch64-linux-gnu/nyx/modules.mock")
-else()
-set (NYX_MODULE_DIR "/lib/arm-linux-gnueabi/nyx/modules")
-set (NYX_MODULE_MOCK_DIR "/lib/arm-linux-gnueabi/nyx/modules.mock")
-endif()
+# configuration file for grouper.
+# specify all the modules to be compiled
+
+set(MODULE_SYSTEM_WEBOS_LINUX		NO)
+set(MODULE_BATTERY_WEBOS_LINUX		YES)
+set(MODULE_CHARGER_WEBOS_LINUX		YES)
+set(MODULE_KEYS_WEBOS_LINUX			YES)
+set(MODULE_TOUCHPANEL_WEBOS_LINUX		NO)
+set(MODULE_TOUCHPANEL_MTDEV_WEBOS_LINUX		YES)
+
+add_definitions(-DBATTERY_SYSFS_PATH=\"/sys/class/power_supply/battery/\")

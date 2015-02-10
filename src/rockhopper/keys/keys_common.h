@@ -16,25 +16,15 @@
 *
 * LICENSE@@@ */
 
-#include "touchpanel_gestures.h"
-#include "touchpanel_common.h"
+#ifndef KEYS_COMMON_H_
+#define KEYS_COMMON_H_
 
-#include <nyx/module/nyx_log.h>
+typedef struct {
+    nyx_device_t _parent;
+    nyx_event_keys_t* current_event_ptr;
+} keys_device_t;
 
-void
-set_event_params(input_event_t* pEvent, time_stamp_t* pTime, uint16_t type,
-               uint16_t code, int32_t value)
-{
-    if (NULL == pEvent || NULL == pTime)
-    {
-        nyx_error("NULL parameter passed\n");
-        return; 
-    }
+int lookup_key(keys_device_t* d, uint16_t keyCode, int32_t keyValue,
+        nyx_key_type_t* key_type_out_ptr);
 
-    ((struct timeval*)pTime)->tv_sec = ((time_stamp_t*)&pEvent->time)->time.tv_sec;
-    ((struct timeval*)pTime)->tv_usec = ((time_stamp_t*)&pEvent->time)->time.tv_nsec / 1000;
-
-    pEvent->type = type;
-    pEvent->code = code;
-    pEvent->value = value;
-}
+#endif

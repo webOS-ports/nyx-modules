@@ -1,6 +1,6 @@
 # @@@LICENSE
 #
-#      Copyright (c) 2010-2012 Hewlett-Packard Development Company, L.P.
+#      Copyright (c) 2010-2014 LG Electronics, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,7 +21,10 @@ cmake_minimum_required(VERSION 2.8.7)
 project(nyx-modules)
 
 include(webOS/webOS)
-webos_modules_init(1 0 0 QUALIFIER RC3)
-webos_component(2 0 0)
+webos_modules_init(1 0 0 QUALIFIER RC7)
+webos_component(6 1 0)
 
 add_subdirectory(src)
+
+install(FILES files/conf/99-nyx-modules.rules DESTINATION ${WEBOS_INSTALL_SYSCONFDIR}/udev/rules.d)
+

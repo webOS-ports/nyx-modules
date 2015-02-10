@@ -1,6 +1,6 @@
 /* @@@LICENSE
 *
-*      Copyright (c) 2010-2012 Hewlett-Packard Development Company, L.P.
+*      Copyright (c) 2010-2013 LG Electronics, Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <linux/input.h>
+#include <linux/ioctl.h>
 #include <linux/fb.h>
 #include <math.h>
 #include <stdio.h>
@@ -32,6 +33,8 @@
 #include <glib.h>
 #include <errno.h>
 #include <poll.h>
+
+#include <mtdev.h>
 
 #include <nyx/nyx_module.h>
 #include <nyx/module/nyx_event_touchpanel_internal.h>
@@ -70,6 +73,26 @@ typedef struct  {
 	size_t input_read;
 	input_event_t input[MAX_HIDD_EVENTS];
 } event_list_t;
+
+typedef struct {
+	int touchMajor;
+	int touchMinor;
+	int widthMajor;
+	int widthMinor;
+	int orientation;
+	int posX;
+	int posY;
+	int tracking_id;
+	int previous_tracking_id;
+	struct finger_t *nyx_finger;
+} mt_slot_t;
+struct mtdev *ts_mtdev = NULL;
+/*
+ * Maximum number of slots that this driver can handle for multitouch.
+ * Since we have 10 fingers, it seems sensible to have a max of 10 slots.
+ */
+#define MAX_MT_SLOTS    10
+mt_slot_t *mt_slots = NULL;
 
 
 event_list_t touchpanel_event_list;
@@ -152,6 +175,141 @@ static inline int64_t get_ts_tval(struct timeval *tv)
 	return tv->tv_sec * 1000000000LL + tv->tv_usec * 1000;
 }
 
+#define VBOXGUEST_DEVICE_NAME   "/dev/vboxguest"
+
+/** Version of VMMDevRequestHeader structure. */
+#define VMMDEV_REQUEST_HEADER_VERSION (0x10001)
+
+#define VBOXGUEST_IOCTL_FLAG     0
+#define VBOXGUEST_IOCTL_CODE_(Function, Size)  _IOC(_IOC_READ|_IOC_WRITE, 'V', (Function), (Size))
+#define VBOXGUEST_IOCTL_CODE(Function, Size)   VBOXGUEST_IOCTL_CODE_((Function) | VBOXGUEST_IOCTL_FLAG, Size)
+#define VBOXGUEST_IOCTL_VMMREQUEST(Size)       VBOXGUEST_IOCTL_CODE(3, (Size))
+
+#pragma pack(4)
+/** generic VMMDev request header */
+typedef struct
+{
+    /** size of the structure in bytes (including body). Filled by caller */
+    uint32_t size;
+    /** version of the structure. Filled by caller */
+    uint32_t version;
+    /** type of the request */
+    /*VMMDevRequestType*/ uint32_t requestType;
+    /** return code. Filled by VMMDev */
+    int32_t  rc;
+    /** reserved fields */
+    uint32_t reserved1;
+    uint32_t reserved2;
+} VMMdev_request_header;
+
+/** mouse status request structure */
+typedef struct
+{
+    /** header */
+        VMMdev_request_header header;
+    /** mouse feature mask */
+    uint32_t mouseFeatures;
+    /** mouse x position */
+    int32_t pointerXPos;
+    /** mouse y position */
+    int32_t pointerYPos;
+} VMMdev_req_mouse_status;
+
+/**
+ * mouse pointer shape/visibility change request
+ */
+typedef struct VMMdev_req_mouse_pointer
+{
+    /** Header. */
+        VMMdev_request_header header;
+    /** VBOX_MOUSE_POINTER_* bit flags. */
+    uint32_t fFlags;
+    /** x coordinate of hot spot. */
+    uint32_t xHot;
+    /** y coordinate of hot spot. */
+    uint32_t yHot;
+    /** Width of the pointer in pixels. */
+    uint32_t width;
+    /** Height of the pointer in scanlines. */
+    uint32_t height;
+    /** Pointer data. */
+    char pointerData[4];
+} VMMdev_req_mouse_pointer;
+
+/* The purpose of this function is to enable mouse pointer on the screen
+   for virtualbox qemux86 images, by firing appropriate ioctls to vbox driver */
+static void init_vbox_touchpanel(void)
+{
+        // Open the VirtualBox kernel module driver
+        int vbox_fd = open(VBOXGUEST_DEVICE_NAME, O_RDWR, 0);
+        if (vbox_fd < 0)
+        {
+                nyx_error("ERROR: vboxguest module open failed: %d\n", errno);
+                goto error;
+        }
+
+        VMMdev_req_mouse_status Req;
+        Req.header.size        = (uint32_t)sizeof(VMMdev_req_mouse_status);
+        Req.header.version     = 0x10001;   // VMMDEV_REQUEST_HEADER_VERSION;
+        Req.header.requestType = 2;         // VMMDevReq_SetMouseStatus;
+        Req.header.rc          = -1;        // VERR_GENERAL_FAILURE;
+        Req.header.reserved1   = 0;
+        Req.header.reserved2   = 0;
+
+        // set MouseGuestNeedsHostCursor (bit 2)
+        Req.mouseFeatures = (1 << 2);
+        Req.pointerXPos = 0;
+        Req.pointerYPos = 0;
+
+        // perform VMM request
+        if (ioctl(vbox_fd, VBOXGUEST_IOCTL_VMMREQUEST(Req.header.size), (void*)&Req.header) < 0)
+        {
+                nyx_error("ERROR: vboxguest rms ioctl failed: %d\n", errno);
+                goto error;
+        }
+        else if (Req.header.rc < 0)
+        {
+                nyx_error( "ERROR: vboxguest SetMouseStatus failed: %d\n", Req.header.rc);
+                goto error;
+        }
+
+	VMMdev_req_mouse_pointer mpReq;
+        mpReq.header.size        = (uint32_t)sizeof(VMMdev_req_mouse_pointer);
+        mpReq.header.version     = 0x10001; // VMMDEV_REQUEST_HEADER_VERSION;
+        mpReq.header.requestType = 3;       // VMMDevReq_SetPointerShape;
+        mpReq.header.rc          = -1;      // VERR_GENERAL_FAILURE;
+        mpReq.header.reserved1   = 0;
+        mpReq.header.reserved2   = 0;
+
+        // set fields for SetPointerShape (most importantly VISIBLE)
+        mpReq.fFlags = 1;           // VBOX_MOUSE_POINTER_VISIBLE;
+        mpReq.xHot = 0;
+        mpReq.yHot = 0;
+        mpReq.width = 0;
+        mpReq.height = 0;
+        mpReq.pointerData[0] = 0;
+        mpReq.pointerData[1] = 0;
+        mpReq.pointerData[2] = 0;
+        mpReq.pointerData[3] = 0;
+
+	// perform VMM request
+        if (ioctl(vbox_fd, VBOXGUEST_IOCTL_VMMREQUEST(mpReq.header.size), (void*)&mpReq.header) < 0)
+        {
+                nyx_error( "ERROR: vboxguest mpr ioctl failed: %d\n", errno);
+                goto error;
+        }
+        else if (mpReq.header.rc < 0)
+        {
+                nyx_error( "ERROR: vboxguest SetPointerShape failed: %d\n", mpReq.header.rc);
+                goto error;
+        }
+        return;
+error:
+        if(vbox_fd >= 0)
+                close(vbox_fd);
+        return;
+}
+
 
 /*
  * FIXME: The following two definitions are a temporary hack to work around
@@ -164,21 +322,47 @@ static general_settings_t sGeneralSettings =
 	.fingerDownThreshold = 0
 };
 
+#define FRAMEBUF_DEVICE_NAME    "/dev/fb"
+
+static int
+get_display_res(int* x, int* y)
+{
+	int ret = -1;
+	struct fb_var_screeninfo varinfo;
+
+	int displayFd = open(FRAMEBUF_DEVICE_NAME, O_RDONLY);
+	if (displayFd < 0)
+	{
+		nyx_error("Error in opening fb file");
+		return ret;
+	}
+
+	if (ioctl(displayFd, FBIOGET_VSCREENINFO, &varinfo) < 0)
+	{
+		nyx_error("Error in getting var screen info");
+		goto exit;
+	}
+
+	*x = varinfo.xres;
+	*y = varinfo.yres;
+
+	ret = 0;
+
+exit:
+	close(displayFd);
+	return ret;
+}
+
+
 static float scaleX, scaleY;
-
-/* Using hardcoded values for now ,since ioctl FBIOGET_VSCREENINFO 
-   on /dev/fb0 is returning invalid values in qemux86 */
-
-#define SCREEN_HORIZONTAL_RES	1024
-#define SCREEN_VERTICAL_RES	768
 
 static int
 init_touchpanel(void)
 {
 	struct input_absinfo abs;
-	int  maxX, maxY, ret = -1;
+	int  maxX, maxY, sXres, sYres, ret = -1;
     	
-	touchpanel_event_fd = open("/dev/input/touchscreen0", O_RDWR);
+	touchpanel_event_fd = open("/dev/input/touchscreen0", O_RDWR | O_NONBLOCK);
 	if(touchpanel_event_fd < 0) {
 		nyx_error("Error in opening touchpanel event device");
 		return -1;
@@ -198,10 +382,34 @@ init_touchpanel(void)
 	}
 	maxY = abs.maximum;
 
+	// The following function is valid only for virtualbox qemux86 image
+	init_vbox_touchpanel();
     	init_gesture_state_machine(&sGeneralSettings, 1);
 
-	scaleX = (float)SCREEN_HORIZONTAL_RES / (float)maxX;
-	scaleY = (float)SCREEN_VERTICAL_RES / (float)maxY;
+	/* Get the display resolution */
+	if (get_display_res(&sXres, &sYres) < 0)
+	{
+		nyx_error( "Failed to get display resolution");
+		goto error;
+	}
+
+	scaleX = (float)sXres / (float)maxX;
+	scaleY = (float)sYres / (float)maxY;
+
+	/* initialize the mtdev instance for this touchscreen */
+	ts_mtdev = mtdev_new_open(touchpanel_event_fd);
+        if( ts_mtdev )
+	{
+		nyx_debug("[touchpanel] mtdev initialized.");
+		int iSlot = 0;
+	        mt_slots = (mt_slot_t *)calloc(sizeof(mt_slot_t), MAX_MT_SLOTS);
+		for( ; iSlot < MAX_MT_SLOTS; iSlot++ )
+		{
+			mt_slots[iSlot].tracking_id = -1;
+			mt_slots[iSlot].previous_tracking_id = -1;
+			mt_slots[iSlot].nyx_finger = -1;
+		}
+	}
 
 	return 0;
 error:
@@ -268,6 +476,16 @@ nyx_error_t nyx_module_close(nyx_device_t *d) {
 
         deinit_gesture_state_machine();
 	free(d);
+
+	if(ts_mtdev)
+	{
+		mtdev_close_delete(ts_mtdev);
+	}
+	if(mt_slots)
+	{
+		free(mt_slots);
+	}
+
  	
 	if(touchpanel_event_fd >= 0) {
                 close(touchpanel_event_fd);
@@ -326,7 +544,11 @@ generate_mouse_gesture(int touchButtonState)
     	yOrd[1] = 0;
     	wOrd[1] = 0;
 
-    	gesture_state_machine(xOrd, yOrd, wOrd, fingers, &eventTime,touchpanel_event_list.input,&num_events);
+	/* track this new coordinate */
+    	gesture_state_machine_track(xOrd, yOrd, wOrd, fingers, &eventTime);
+
+	/* process the modifications */
+	gesture_state_machine_process(&eventTime, touchpanel_event_list.input,&num_events);
     	touchpanel_event_list.input_filled=num_events * sizeof(input_event_t);
     	touchpanel_event_list.input_read=0;
 }
@@ -338,6 +560,72 @@ generate_mouse_gesture(int touchButtonState)
  */
 #define SYN_START       8
 
+static void handle_new_mt_event(input_event_t *event)
+{
+	static int currentSlot = 0;
+
+	/* safety check */
+	if ((NULL == ts_mtdev) || (NULL == mt_slots))
+		return;
+
+	nyx_debug("[touchpanel] ABS=%x KEY=%x,SYN=%x", EV_ABS, EV_KEY, EV_SYN);
+	nyx_debug("[touchpanel] event->type = %x, event->code = %x, event->value=%d", event->type, event->code, (int) (event->value));
+
+	/* if the current slot has changed, it should be the first thing we get */
+	if ((event->type == EV_ABS) && (event->code == ABS_MT_SLOT))
+		currentSlot = (int) (event->value);
+
+	/* if the current slot is not valid, then skip the event */
+	if( currentSlot < 0 || currentSlot >= MAX_MT_SLOTS )
+		return;
+
+	if ((event->type == EV_ABS) && (event->code == ABS_MT_TRACKING_ID))
+		mt_slots[currentSlot].tracking_id = (int) (event->value);
+
+        else if ((event->type == EV_ABS) && (event->code == ABS_MT_POSITION_X))
+                mt_slots[currentSlot].posX =  (int) (event->value * scaleX);
+
+        else if ((event->type == EV_ABS) && (event->code == ABS_MT_POSITION_Y))
+                mt_slots[currentSlot].posY = (int) (event->value * scaleY);
+
+	 else if (event->type == EV_SYN && event->code == SYN_REPORT)
+         {
+	        int num_events=0;
+	        time_stamp_t eventTime;
+	        get_time_stamp(&eventTime);
+
+		/* Now process all the changes */
+		int iSlot = 0;
+                for( ; iSlot < MAX_MT_SLOTS; iSlot++ )
+                {
+                        if((mt_slots[iSlot].tracking_id != -1) && (mt_slots[iSlot].previous_tracking_id == -1))
+			{
+				/* a new finger has appeared */
+				nyx_debug("[touchpanel] new finger");
+				mt_slots[iSlot].nyx_finger = add_new_finger(mt_slots[iSlot].posX, mt_slots[iSlot].posY, 1, &eventTime);
+				mt_slots[iSlot].previous_tracking_id = mt_slots[iSlot].tracking_id;
+			}
+			else if((mt_slots[iSlot].tracking_id == -1) && (mt_slots[iSlot].previous_tracking_id != -1))
+			{
+				/* a finger has been released */
+				nyx_debug("[touchpanel] release finger");
+				update_finger(mt_slots[iSlot].nyx_finger, mt_slots[iSlot].posX, mt_slots[iSlot].posY, 0, &eventTime);
+
+				mt_slots[iSlot].nyx_finger = NULL;
+				mt_slots[iSlot].previous_tracking_id = mt_slots[iSlot].tracking_id;
+			}
+			else if(mt_slots[iSlot].tracking_id != -1)
+			{
+				nyx_debug("[touchpanel] update finger");
+				/* simple move gesture */
+				update_finger(mt_slots[iSlot].nyx_finger, mt_slots[iSlot].posX, mt_slots[iSlot].posY, 1, &eventTime);
+			}
+                }
+
+		gesture_state_machine_process(&eventTime, touchpanel_event_list.input+touchpanel_event_list.input_filled/sizeof(input_event_t), &num_events);
+	        touchpanel_event_list.input_filled+=num_events * sizeof(input_event_t);
+         }
+}
 
 static void handle_new_event(input_event_t *event)
 {
@@ -346,11 +634,11 @@ static void handle_new_event(input_event_t *event)
 	// Truncate scaled X & Y coordinate values
 	if ((event->type == EV_ABS) && (event->code == ABS_X))
 			cachedX = (int) (event->value * scaleX);
-	
+		
 	else if ((event->type == EV_ABS) && (event->code == ABS_Y))
 			cachedY = (int) (event->value * scaleY);
-	
-	else if ((event->type == EV_KEY) && (event->code == BTN_TOUCH))
+	// qemu touchpanel sends BTN_TOUCH, virtualbox touchpanel sends BTN_LEFT
+	else if ((event->type == EV_KEY) && ((event->code == BTN_TOUCH) || (event->code == BTN_LEFT)))
 	{	
             // save touchButtonState (up or down)
 		touchButtonState = event->value;
@@ -364,11 +652,13 @@ static void handle_new_event(input_event_t *event)
 	        	generate_mouse_gesture(1);
          	}
 	 }
-	 else if (event->type == EV_SYN)
+	 else if (event->type == EV_SYN && event->code == SYN_REPORT)
 	 {
 	       	generate_mouse_gesture(touchButtonState);
 	 }
 	
+        nyx_debug("[touchpanel] cachedX = %d, cachedY = %d", cachedX, cachedY);
+
 	 if ((event->type == EV_REL && event->code == REL_WHEEL) ||
             (event->type == EV_KEY && (event->code == BTN_MIDDLE || event->code == BTN_SIDE ||
                                          event->code == BTN_EXTRA || event->code == BTN_FORWARD ||
@@ -400,24 +690,44 @@ read_input_event(void)
 	fds[0].fd = touchpanel_event_fd;
 	fds[0].events = POLLIN;
 
-	int ret_val = poll(fds,1,0);
-	if(ret_val <= 0)
+	/* read events through mtdev (which can also handle singletouch events) */
+	if( ts_mtdev )
 	{
-    		return 0;
-	}
+		touchpanel_event_list.input_filled=0;
+        	touchpanel_event_list.input_read=0;
 
-	if(fds[0].revents & POLLIN) {
-		rd = read(fds[0].fd, &pEvent, sizeof(input_event_t));
-
-		if (rd<0 && errno!=EINTR)
+		if( !mtdev_idle(ts_mtdev, touchpanel_event_fd, 0 ) )
 		{
-			nyx_error("Failed to read events from keypad event file");
-			return -1;
+			while( mtdev_get(ts_mtdev, touchpanel_event_fd, (struct input_event *)&pEvent, 1) > 0 )
+			{
+				numEvents++;
+				handle_new_mt_event(&pEvent);
+			}
+		}
+	}
+	else
+	{
+		/* Fallback on singletouch handling it no mtdev is present */
+		int ret_val = poll(fds,1,0);
+		if(ret_val <= 0)
+		{
+	    		return 0;
 		}
 
-		handle_new_event(&pEvent);
-    	}
-    	return numEvents;
+		if(fds[0].revents & POLLIN) {
+			rd = read(fds[0].fd, &pEvent, sizeof(input_event_t));
+
+			if (rd<0 && errno!=EINTR)
+			{
+				nyx_error("Failed to read events from keypad event file");
+				return -1;
+			}
+
+			handle_new_event(&pEvent);
+	    	}
+	}
+    	
+	return numEvents;
 }
 
 nyx_error_t touchpanel_get_event(nyx_device_t* d, nyx_event_t** e)

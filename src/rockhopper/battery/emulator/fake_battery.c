@@ -1,6 +1,6 @@
 /* @@@LICENSE
 *
-*      Copyright (c) 2010-2012 Hewlett-Packard Development Company, L.P.
+*      Copyright (c) 2010-2013 LG Electronics, Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -34,6 +34,7 @@
 
 #include "batterylib.h"
 #include "battery_read.h"
+#include "fileutils.h"
 
 #include <nyx/module/nyx_log.h>
 
@@ -41,118 +42,28 @@
 
 #define LOG_DOMAIN "fake_battery: "
 
-#define   BATTERY_PERCENT	"getpercent"
-#define   BATTERY_TEMPERATURE	"gettemp"
-#define   BATTERY_VOLTS	"getvoltage"
-#define   BATTERY_CURRENT	"getcurrent"
-#define   BATTERY_AVG_CURRENT	"getavgcurrent"
-#define   BATTERY_FULL_40	"getfull40"
-#define   BATTERY_RAW_COULOMB	"getrawcoulomb"
-#define   BATTERY_COULOMB	"getcoulomb"
-#define   BATTERY_AGE	"getage"
+#define   BATTERY_PERCENT   "getpercent"
+#define   BATTERY_TEMPERATURE   "gettemp"
+#define   BATTERY_VOLTS "getvoltage"
+#define   BATTERY_CURRENT   "getcurrent"
+#define   BATTERY_AVG_CURRENT   "getavgcurrent"
+#define   BATTERY_FULL_40   "getfull40"
+#define   BATTERY_RAW_COULOMB   "getrawcoulomb"
+#define   BATTERY_COULOMB   "getcoulomb"
+#define   BATTERY_AGE   "getage"
 
 #define CHARGE_MIN_TEMPERATURE_C 0
 #define CHARGE_MAX_TEMPERATURE_C 57
 #define BATTERY_MAX_TEMPERATURE_C  60
 
-/**
- * Returns string in pre-allocated buffer.
- */
-
-int
-FileGetString(const char *path, char *ret_string, size_t maxlen)
-{
-    GError *gerror = NULL;
-    char *contents = NULL;
-    gsize len;
-
-    if (!path || !g_file_get_contents(path, &contents, &len, &gerror)) {
-        if (gerror) {
-            nyx_critical( "%s: %s", __FUNCTION__, gerror->message);
-            g_error_free(gerror);
-        }
-        return -1;
-    }
-
-    g_strstrip(contents);
-    g_strlcpy(ret_string, contents, maxlen);
-
-    g_free(contents);
-
-    return 0;
-}
-
-int
-FileGetInt(const char *path, int *ret_data)
-{
-    GError *gerror = NULL;
-    char *contents = NULL;
-    char *endptr;
-    gsize len;
-    long int val;
-
-    if (!path || !g_file_get_contents(path, &contents, &len, &gerror)) {
-        if (gerror) {
-            nyx_critical( "%s: %s", __FUNCTION__, gerror->message);
-            g_error_free(gerror);
-        }
-        return -1;
-    }
-
-    val = strtol(contents, &endptr, 10);
-    if (endptr == contents) {
-        nyx_critical( "%s: Invalid input in %s.",
-            __FUNCTION__, path);
-        goto end;
-    }
-
-    if (ret_data)
-        *ret_data = val;
-end:
-    g_free(contents);
-    return 0;
-}
-
-int
-FileGetDouble(const char *path, double *ret_data)
-{
-    GError *gerror = NULL;
-    char *contents = NULL;
-    char *endptr;
-    gsize len;
-    float val;
-
-    if (!path || !g_file_get_contents(path, &contents, &len, &gerror)) {
-        if (gerror) {
-            nyx_critical( "%s: %s", __FUNCTION__, gerror->message);
-            g_error_free(gerror);
-        }
-        return -1;
-    }
-
-    val = strtod(contents, &endptr);
-    if (endptr == contents) {
-        nyx_critical( "%s: Invalid input in %s.",
-            __FUNCTION__, path);
-        goto end;
-    }
-
-    if (ret_data)
-        *ret_data = val;
-end:
-    g_free(contents);
-    return 0;
-}
-
-
 nyx_battery_ctia_t battery_ctia_params;
 
 nyx_battery_ctia_t *get_battery_ctia_params(void)
 {
-	battery_ctia_params.charge_min_temp_c=0;
-	battery_ctia_params.charge_max_temp_c=CHARGE_MAX_TEMPERATURE_C;
-	battery_ctia_params.battery_crit_max_temp=BATTERY_MAX_TEMPERATURE_C;
-	battery_ctia_params.skip_battery_authentication=true;
+	battery_ctia_params.charge_min_temp_c = 0;
+	battery_ctia_params.charge_max_temp_c = CHARGE_MAX_TEMPERATURE_C;
+	battery_ctia_params.battery_crit_max_temp = BATTERY_MAX_TEMPERATURE_C;
+	battery_ctia_params.skip_battery_authentication = true;
 
 	return &battery_ctia_params;
 }
@@ -164,11 +75,16 @@ nyx_battery_ctia_t *get_battery_ctia_params(void)
  */
 int battery_percent(void)
 {
-    int val;
-    int ret;
-   	ret = FileGetInt(SYSFS_DEVICE BATTERY_PERCENT, &val);
-    if (ret) return -1;
-    return val;
+	int val;
+	int ret;
+	ret = FileGetInt(SYSFS_DEVICE BATTERY_PERCENT, &val);
+
+	if (ret)
+	{
+		return -1;
+	}
+
+	return val;
 }
 /**
  * @brief Read battery temperature
@@ -177,11 +93,16 @@ int battery_percent(void)
  */
 int battery_temperature(void)
 {
-    int val;
-    int ret;
-    ret = FileGetInt(SYSFS_DEVICE BATTERY_TEMPERATURE, &val);
-    if (ret) return -1;
-    return val;
+	int val;
+	int ret;
+	ret = FileGetInt(SYSFS_DEVICE BATTERY_TEMPERATURE, &val);
+
+	if (ret)
+	{
+		return -1;
+	}
+
+	return val;
 }
 
 /**
@@ -192,14 +113,18 @@ int battery_temperature(void)
 
 int battery_voltage(void)
 {
-    int val = 0;
-    int ret;
+	int val = 0;
+	int ret;
 
-    ret = FileGetInt(SYSFS_DEVICE BATTERY_VOLTS, &val);
-    val = val/1000;
+	ret = FileGetInt(SYSFS_DEVICE BATTERY_VOLTS, &val);
+	val = val / 1000;
 
-    if (ret) return -1;
-    return val;
+	if (ret)
+	{
+		return -1;
+	}
+
+	return val;
 }
 
 /**
@@ -209,14 +134,18 @@ int battery_voltage(void)
  */
 int battery_current(void)
 {
-    int val = 0;
-    int ret;
+	int val = 0;
+	int ret;
 
-    ret = FileGetInt(SYSFS_DEVICE BATTERY_CURRENT, &val);
-    val = val/1000;
+	ret = FileGetInt(SYSFS_DEVICE BATTERY_CURRENT, &val);
+	val = val / 1000;
 
-    if (ret) return -1;
-    return val;
+	if (ret)
+	{
+		return -1;
+	}
+
+	return val;
 }
 
 /**
@@ -227,11 +156,16 @@ int battery_current(void)
 
 int battery_avg_current(void)
 {
-    int val;
-    int ret;
-    ret = FileGetInt(SYSFS_DEVICE BATTERY_AVG_CURRENT, &val);
-    if (ret) return -1;
-    return val / 1000;
+	int val;
+	int ret;
+	ret = FileGetInt(SYSFS_DEVICE BATTERY_AVG_CURRENT, &val);
+
+	if (ret)
+	{
+		return -1;
+	}
+
+	return val / 1000;
 }
 
 /**
@@ -241,10 +175,14 @@ int battery_avg_current(void)
  */
 double battery_full40(void)
 {
-    double val;
-    if (FileGetDouble(SYSFS_DEVICE BATTERY_FULL_40, &val))
-        return -1;
-    return val;
+	double val;
+
+	if (FileGetDouble(SYSFS_DEVICE BATTERY_FULL_40, &val))
+	{
+		return -1;
+	}
+
+	return val;
 }
 
 /**
@@ -255,10 +193,14 @@ double battery_full40(void)
 
 double battery_rawcoulomb(void)
 {
-    double val;
-    if (FileGetDouble(SYSFS_DEVICE BATTERY_RAW_COULOMB, &val))
-        return -1;
-    return val;
+	double val;
+
+	if (FileGetDouble(SYSFS_DEVICE BATTERY_RAW_COULOMB, &val))
+	{
+		return -1;
+	}
+
+	return val;
 }
 
 /**
@@ -269,12 +211,17 @@ double battery_rawcoulomb(void)
 
 double battery_coulomb(void)
 {
-    double val;
-    int ret;
+	double val;
+	int ret;
 
-  	ret = FileGetDouble(SYSFS_DEVICE BATTERY_COULOMB, &val);
-    if (ret) return -1;
-    return val;
+	ret = FileGetDouble(SYSFS_DEVICE BATTERY_COULOMB, &val);
+
+	if (ret)
+	{
+		return -1;
+	}
+
+	return val;
 }
 
 /**
@@ -284,10 +231,14 @@ double battery_coulomb(void)
  */
 double battery_age(void)
 {
-    double val;
-    if (FileGetDouble(SYSFS_DEVICE BATTERY_AGE, &val))
-        return -1;
-    return val;
+	double val;
+
+	if (FileGetDouble(SYSFS_DEVICE BATTERY_AGE, &val))
+	{
+		return -1;
+	}
+
+	return val;
 }
 
 
@@ -297,7 +248,8 @@ bool battery_is_present(void)
 	return (voltage > 0);
 }
 
-bool battery_is_authenticated(const char *pair_challenge, const char *pair_response)
+bool battery_is_authenticated(const char *pair_challenge,
+                              const char *pair_response)
 {
 	return true;
 }
@@ -307,9 +259,13 @@ void battery_read_init(void)
 	system("sh /usr/sbin/fake_battery_values.sh");
 }
 
+void battery_read_close(void)
+{
+}
+
 bool battery_authenticate(void)
 {
-        return true;
+	return true;
 }
 
 void battery_set_wakeup_percent(int percentage)

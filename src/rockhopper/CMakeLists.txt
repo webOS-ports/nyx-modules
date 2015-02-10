@@ -1,6 +1,6 @@
 # @@@LICENSE
 #
-#      Copyright (c) 2010-2012 Hewlett-Packard Development Company, L.P.
+#      Copyright (c) 2010-2013 LG Electronics, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,7 +19,13 @@
 
 if(MODULE_SYSTEM_WEBOS_LINUX)
     add_subdirectory(system)
+endif()
+
+if(MODULE_BATTERY_WEBOS_LINUX)
     add_subdirectory(battery)
+endif()
+
+if(MODULE_CHARGER_WEBOS_LINUX)
     add_subdirectory(charger)
 endif()
 
@@ -27,7 +33,22 @@ if(MODULE_TOUCHPANEL_WEBOS_LINUX)
     add_subdirectory(touchpanel)
 endif()
 
+if(MODULE_TOUCHPANEL_MTDEV_WEBOS_LINUX)
+    add_subdirectory(touchpanel_mtdev)
+endif()
+
 if(MODULE_KEYS_WEBOS_LINUX)
     add_subdirectory(keys)
 endif()
 
+if(MODULE_ALS_WEBOS_LINUX_TUNA)
+    add_subdirectory(als_tuna)
+endif()
+
+if(MODULE_LED_CONTROLLER_WEBOS_LINUX)
+    add_subdirectory(led_controller)
+endif()
+
+if(MODULE_HAPTICS_TIMEDOUTPUT_WEBOS_LINUX)
+    add_subdirectory(haptics_timedoutput)
+endif()

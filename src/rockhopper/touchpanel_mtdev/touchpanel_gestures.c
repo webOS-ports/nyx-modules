@@ -1,6 +1,6 @@
 /* @@@LICENSE
 *
-*      Copyright (c) 2010-2012 Hewlett-Packard Development Company, L.P.
+*      Copyright (c) 2010-2013 LG Electronics, Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -197,13 +197,13 @@ reset_state_data(gesture_state_data_t* pStateData)
     pStateData->insideTapRadius = true;
 }
 
-static void add_new_finger(int x,int y,int weight, const time_stamp_t *pCurTime)
+finger_t *add_new_finger(int x,int y,int weight, const time_stamp_t *pCurTime)
 {
     finger_t *finger = g_queue_pop_head(&availableFingers);
 
     if(!finger) {
             nyx_info("No available finger buffers, rejecting finger\n");
-            return;
+            return NULL;
     }
   //  ASSERT(finger->state.state == UNUSED);
     reset_state_data(&finger->state);
@@ -217,8 +217,25 @@ static void add_new_finger(int x,int y,int weight, const time_stamp_t *pCurTime)
     update_coord_buffer(&finger->coords, x, y, pCurTime);
     nyx_info("Finger down at %d,%d\n",x,y);
     sFingers = g_list_prepend(sFingers,finger);
+
+    return finger;
 }
 
+void
+update_finger(finger_t *finger, int x,int y,int weight, const time_stamp_t *pCurTime)
+{
+    if(finger == NULL)
+	return;
+
+    //Let's ignore the coordinate if there was a huge difference in weight
+    //This is a common scenario when the user is releasing his finger.
+    if(finger->lastWeight/2 < weight) {
+        update_coord_buffer(&finger->coords, x, y, pCurTime);
+    } else {
+        nyx_info("Ignoring coordinate\n");
+    }   
+    finger->lastWeight = weight;
+}
 
 #define MAX_EVENTS_PER_UPDATE 100
 
@@ -227,9 +244,8 @@ static void add_new_finger(int x,int y,int weight, const time_stamp_t *pCurTime)
  * The hardware does not do any fingertracking, so we do it all here. 
  */
 void
-gesture_state_machine(int* pXCoords,int* pYCoords, const int* pFingerWeights,
-                    int numFingers, const time_stamp_t* pCurTime,
-                    input_event_t *events, int *numEvents)
+gesture_state_machine_track(int* pXCoords,int* pYCoords, const int* pFingerWeights,
+                    int numFingers, const time_stamp_t* pCurTime)
 {
     /* Update Fingers */
     int j;
@@ -290,14 +306,8 @@ gesture_state_machine(int* pXCoords,int* pYCoords, const int* pFingerWeights,
         }
         nyx_info("New coord (at: %d), %d,%d weight: %d, distance: %d\n",finger->minDistId,pXCoords[finger->minDistId], pYCoords[finger->minDistId],pFingerWeights[finger->minDistId],finger->minDist);
 
-        //Let's ignore the coordinate if there was a huge difference in weight
-        //This is a common scenario when the user is releasing his finger.
-        if(finger->lastWeight/2 < pFingerWeights[finger->minDistId]) {
-            update_coord_buffer(&finger->coords, pXCoords[finger->minDistId], pYCoords[finger->minDistId], pCurTime);
-        } else {
-            nyx_info("Ignoring coordinate\n");
-        }   
-        finger->lastWeight = pFingerWeights[finger->minDistId];
+	update_finger(finger, pXCoords[finger->minDistId], pYCoords[finger->minDistId], pFingerWeights[finger->minDistId], pCurTime);
+
         //remove finger from pool of "new" fingers.
         pXCoords[finger->minDistId] = pYCoords[finger->minDistId] = 0;
 
@@ -330,9 +340,13 @@ gesture_state_machine(int* pXCoords,int* pYCoords, const int* pFingerWeights,
         timestmpcnt += 1000000;
         add_new_finger(pXCoords[j],pYCoords[j],pFingerWeights[j],&ts);
     }
+}
 
-	/* All fingers has been matched, now let's process the changes */
-    list = g_list_first(sFingers);
+void
+gesture_state_machine_process(const time_stamp_t* pCurTime, input_event_t *events, int *numEvents)
+{
+    /* Let's process the changes */
+    GList *list = g_list_first(sFingers);
     while(list) {
     	finger_t *finger = (finger_t*)list->data;
         //-1 means to move the list element into the available list
@@ -395,7 +409,7 @@ int gesture_state_machine_finger(finger_t *finger, input_event_t *events,int *nu
     set_event_params(&finger->events[finger->numEvents++], &timestamp, EV_ABS, ABS_Y, y);
     *numEvents = finger->numEvents;
 
-    if(finger->minDist > 0) {
+    if(finger->lastWeight <= g_atomic_int_get(&spGeneralSettings->fingerDownThreshold)) {
         //send finger release event
         nyx_info("Finger up at %d,%d\n",x,y);
         set_event_params(&finger->events[finger->numEvents++], &timestamp, EV_KEY, BTN_TOUCH, 0);

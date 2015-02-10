@@ -16,11 +16,15 @@
 *
 * LICENSE@@@ */
 
-#ifndef __TOUCHPANEL_COMMON_H
-#define __TOUCHPANEL_COMMON_H
+/**
+ * @file fileutils.h
+ */
 
-void set_event_params(input_event_t* pEvent, time_stamp_t* pTime, uint16_t type,
-                    uint16_t code, int32_t value);
+#ifndef FILEUTILS_H_
+#define FILEUTILS_H_
 
-#endif  /* __TOUCHPANEL_COMMON_PRV_H */
+int FileGetString(const char *path, char *ret_string, size_t maxlen);
+int FileGetInt(const char *path, int *ret_data);
+int FileGetDouble(const char *path, double *ret_data);
 
+#endif

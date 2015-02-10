@@ -1,6 +1,6 @@
 # @@@LICENSE
 #
-#      Copyright (c) 2010-2012 Hewlett-Packard Development Company, L.P.
+#      Copyright (c) 2010-2013 LG Electronics, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,4 +16,16 @@
 #
 # LICENSE@@@
 
-add_subdirectory(display)
+if(MODULE_GENERIC_DISPLAY)
+	add_subdirectory(display)
+endif()
+if(MODULE_GENERIC_DEVICE_INFO)
+	add_subdirectory(device_info)
+endif()
+if(MODULE_GENERIC_SECURITY)
+	add_subdirectory(security)
+endif()
+if(MODULE_GENERIC_OS_INFO)
+	add_subdirectory(os_info)
+endif()
+

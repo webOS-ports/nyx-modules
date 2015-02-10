@@ -17,12 +17,16 @@ How to Build on Linux
 
 Below are the tools and libraries (and their minimum versions) required to build nyx-modules:
 
-* cmake 2.6
+* cmake (version required by openwebos/cmake-modules-webos)
 * gcc 4.6.3
 * glib-2.0 2.32.1
 * make (any version)
-* openwebos/nyx-lib 2.0.0 RC2
+* openwebos/cmake-modules-webos 1.0.0 RC4
+* openwebos/nyx-lib 6.0.0
 * pkg-config 0.26
+
+Below is the component (and its minimum version) required to run nyx-modules:
+* lsb 4.1
 
 ## Building
 
@@ -73,7 +77,7 @@ You will need to use `sudo` if you did not specify `WEBOS_INSTALL_ROOT`.
 Unless otherwise specified, all content, including all source code files and
 documentation files in this repository are:
 
-Copyright (c) 2010-2012 Hewlett-Packard Development Company, L.P.
+Copyright (c) 2010-2013 LG Electronics, Inc.
 
 Unless otherwise specified or set forth in the NOTICE file, all content,
 including all source code files and documentation files in this repository are:

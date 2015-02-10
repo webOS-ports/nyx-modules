@@ -1,6 +1,6 @@
 /* @@@LICENSE
 *
-*      Copyright (c) 2010-2012 Hewlett-Packard Development Company, L.P.
+*      Copyright (c) 2010-2013 LG Electronics, Inc.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -80,7 +80,7 @@ void reset_lifetime_timer();
  * @param dirPath        fully-qualified path describing directory to search
  *                       for files.
  */
-void log_blame(const char* dirPath);
+void log_blame(const char *dirPath);
 
 
 #endif

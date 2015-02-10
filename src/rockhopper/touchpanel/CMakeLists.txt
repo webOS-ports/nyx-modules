@@ -1,6 +1,6 @@
 # @@@LICENSE
 #
-#      Copyright (c) 2010-2012 Hewlett-Packard Development Company, L.P.
+#      Copyright (c) 2010-2013 LG Electronics, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,6 +16,4 @@
 #
 # LICENSE@@@
 
-if(${WEBOS_TARGET_MACHINE_IMPL} STREQUAL emulator)
-	nyx_create_module(TouchpanelMain emulator/touchpanel_common.c emulator/touchpanel_gestures.c emulator/touchpanel.c)
-endif()
+nyx_create_module(TouchpanelMain touchpanel_common.c touchpanel_gestures.c touchpanel.c)
