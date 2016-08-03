@@ -52,3 +52,7 @@ endif()
 if(MODULE_HAPTICS_TIMEDOUTPUT_WEBOS_LINUX)
     add_subdirectory(haptics_timedoutput)
 endif()
+
+if(MODULE_MASS_STORAGE_MODE_MTP_WEBOS_LINUX)
+    add_subdirectory(mass_storage_mode_mtp)
+endif()
