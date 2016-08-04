@@ -30,6 +30,7 @@ set(MODULE_GENERIC_OS_INFO        YES CACHE BOOL "Include generic 'OSInfo' modul
 set(MODULE_GENERIC_DEVICE_INFO    YES CACHE BOOL "Include generic 'DeviceInfo' module")
 set(MODULE_GENERIC_SECURITY       YES CACHE BOOL "Include generic 'Security' module")
 set(MODULE_GENERIC_DISPLAY        YES CACHE BOOL "Include generic 'Display' module")
+set(MODULE_MASS_STORAGE_MODE_MTP_WEBOS_LINUX YES CACHE BOOL "Include 'MassStorageMode' module")
 
 set(ENCRYPTION_KEY_TYPE           "" CACHE STRING "Encryption key type")
 
