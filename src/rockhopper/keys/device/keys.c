@@ -42,6 +42,7 @@ int lookup_key(keys_device_t* d, uint16_t keyCode, int32_t keyValue,
 {
     int key = 0;
     switch (keyCode) {
+    case KEY_HOMEPAGE:
     case KEY_HOME:
         key = NYX_KEYS_CUSTOM_KEY_HOME;
         *key_type_out_ptr = NYX_KEY_TYPE_CUSTOM;
