@@ -36,7 +36,7 @@ pkg_check_modules(GIO REQUIRED gio-2.0)
 include_directories(${GIO_INCLUDE_DIRS})
 webos_add_compiler_flags(ALL ${GIO_CFLAGS_OTHER})
 
-if(NYXMOD_OW_BATTERY OR NYXMOD_OW_CHARGER OR NYXMOD_OW_MSMMTP OR NYXMOD_OW_LED)
+if(NYXMOD_OW_BATTERY OR NYXMOD_OW_CHARGER OR NYXMOD_OW_MSMMTP OR NYXMOD_OW_LED OR NYXMOD_OW_HAPTICS)
     pkg_check_modules(UDEV REQUIRED libudev)
     include_directories(${UDEV_INCLUDE_DIRS})
     webos_add_compiler_flags(ALL ${UDEV_CFLAGS_OTHER})
@@ -93,4 +93,8 @@ endif()
 
 if(NYXMOD_OW_LED)
     add_subdirectory(led_controller)
+endif()
+
+if(NYXMOD_OW_HAPTICS)
+    add_subdirectory(haptics_timedoutput)
 endif()

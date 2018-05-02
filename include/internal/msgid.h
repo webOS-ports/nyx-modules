@@ -80,4 +80,13 @@
 #define MSGID_NYX_MOD_LED_OPENFILE_ERR                                      "NYXLED_OPENFILE_ERR"
 #define MSGID_NYX_MOD_LED_FILE_CONTENT_ERR                                  "NYXLED_FILECONTENT_ERR"
 
+/*Haptics Controller */
+#define MSGID_NYX_MOD_HAPTICS_ODEVICE_FOUND                                 "NYXHAPTICS_DEVICE_FOUND"
+#define MSGID_NYX_MOD_HAPTICS_NODEVICE_ERR                                  "NYXHAPTICS_NODEVICE_ERR"
+#define MSGID_NYX_MOD_HAPTICS_NOSPECIAL_EFF                                 "NYXHAPTICS_NOSPECIAL_EFF"
+#define MSGID_NYX_MOD_HAPTICS_NOPULSES_ERR                                  "NYXHAPTICS_NOPULSES_ERR"
+#define MSGID_NYX_MOD_HAPTICS_TOGGLE_TIMEOUT                                "NYXHAPTICS_TOGGLE_TIMEOUT"
+#define MSGID_NYX_MOD_HAPTICS_VIBRATE_PATTERN                               "NYXHAPTICS_VIBRATE_PATTERN"
+#define MSGID_NYX_MOD_HAPTICS_VIBRATE                                       "NYXHAPTICS_VIBRATE"
+
 #endif // __NYX__MODULES__MESSAGE__LOG_H__
