@@ -1,4 +1,6 @@
 # Copyright (c) 2010-2018 LG Electronics, Inc.
+# Copyright (c) 2013 Simon Busch <morphis@gravedo.de>
+# Copyright (c) 2018 Herman van Hazendonk <github.com@herrie.org>
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,23 +16,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-cmake_minimum_required(VERSION 2.8.7)
+include_directories(.)
 
-project(nyx-modules)
-
-include(webOS/webOS)
-include(FindPkgConfig)
-
-webos_modules_init(1 6 2)
-webos_component(7 1 0)
-webos_test_provider(GLIB_TEST)
-webos_include_install_paths()
-
-pkg_check_modules(PMLOG REQUIRED PmLogLib)
-include_directories(${PMLOG_INCLUDE_DIRS})
-webos_add_compiler_flags(ALL ${PMLOG_CFLAGS_OTHER})
-
-include_directories(include/internal)
-
-webos_nyx_module_provider(OW BATTERY CHARGER DEVICEINFO OSINFO SYSTEM DISPLAY SECURITY SECURITY2 MSMMTP ALS LED)
-add_subdirectory(src)
+webos_build_nyx_module(MicroControllerLEDsDefault
+		       SOURCES led_controller.c
+		       LIBRARIES ${GLIB2_LDFLAGS} ${PMLOG_LDFLAGS} ${NYXLIB_LDFLAGS} ${UDEV_LDFLAGS} -lrt -lpthread)

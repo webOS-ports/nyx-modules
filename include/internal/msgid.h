@@ -75,4 +75,9 @@
 #define MSGID_NYX_MOD_ALS_DISABLE_ERR                                       "NYXALS_DISABLE_ERR"
 #define MSGID_NYX_MOD_ALS_READ_EVENT_ERR                                    "NYXALS_READ_EVENT_ERR"
 
+/*LED Controller */
+#define MSGID_NYX_MOD_LED_NODEVICE_ERR                                      "NYXLED_NODEVICE_ERR"
+#define MSGID_NYX_MOD_LED_OPENFILE_ERR                                      "NYXLED_OPENFILE_ERR"
+#define MSGID_NYX_MOD_LED_FILE_CONTENT_ERR                                  "NYXLED_FILECONTENT_ERR"
+
 #endif // __NYX__MODULES__MESSAGE__LOG_H__
