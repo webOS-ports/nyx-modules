@@ -23,3 +23,4 @@ void set_event_params(input_event_t *pEvent, time_stamp_t *pTime, uint16_t type,
                       uint16_t code, int32_t value);
 
 #endif  /* __TOUCHPANEL_COMMON_PRV_H */
+

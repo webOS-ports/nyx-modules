@@ -515,7 +515,7 @@ int gesture_state_machine_finger(finger_t *finger, input_event_t *events,
 	if (finger->minDist > 0)
 	{
 		//send finger release event
-		nyx_debug(MSGID_NYX_MOD_TP_FINGER_UP, 0, "Finger up at %d,%d", x, y);
+		nyx_debug("Finger up at %d,%d", x, y);
 		set_event_params(&finger->events[finger->numEvents++], &timestamp, EV_KEY,
 		                 BTN_TOUCH, 0);
 		*numEvents = finger->numEvents;

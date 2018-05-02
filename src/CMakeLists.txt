@@ -43,7 +43,7 @@ if(NYXMOD_OW_BATTERY OR NYXMOD_OW_CHARGER OR NYXMOD_OW_MSMMTP OR NYXMOD_OW_LED O
 endif()
 
 if(NYXMOD_OW_TOUCHPANEL_MTDEV)
-    pkg_check_modules(MTDEV REQUIRED mtdev)
+    pkg_check_modules(MTDEV REQUIRED libmtdev)
     include_directories(${MTDEV_INCLUDE_DIRS})
     webos_add_compiler_flags(ALL ${MTDEV_CFLAGS_OTHER})
 endif()
@@ -103,16 +103,4 @@ endif()
 
 if(NYXMOD_OW_HAPTICS)
     add_subdirectory(haptics_timedoutput)
-endif()
-
-if(NYXMOD_OW_KEYS)
-    add_subdirectory(keys)
-endif()
-
-if(NYXMOD_OW_TOUCHPANEL)
-    add_subdirectory(touchpanel)
-endif()
-
-if(NYXMOD_OW_TOUCHPANEL_MTDEV)
-    add_subdirectory(touchpanel_mtdev)
 endif()

@@ -54,33 +54,33 @@
 #define MSGID_NYX_MOD_STORAGE_ERR                                           "NYXDEV_STORAGE_ERR"
 #define MSGID_NYX_MOD_DEV_INFO_OPEN_ERR                                     "NYXDEV_INFO_OPEN_ERR"
 
-/** Display lib open*/
+/*Display lib open*/
 #define MSGID_NYX_MOD_DISP_OPEN_ALREADY_ERR                                 "NYXDIS_OPEN_ALREADY_ERR"
 #define MSGID_NYX_MOD_DISP_OPEN_ERR                                         "NYXDIS_OPEN_ERR"
 #define MSGID_NYX_MOD_DISP_OUT_OF_MEMORY                                    "NYXDIS_OUT_OF_MEM"
 
-/** Security lib open*/
+/*Security lib open*/
 #define MSGID_NYX_MOD_SECU_OPEN_ERR                                         "NYXSEC_OPEN_ERR"
 #define MSGID_NYX_MOD_SECU_OUT_OF_MEMORY                                    "NYXSEC_OUT_OF_MEM"
 
-/** System */
+/*System */
 #define MSGID_NYX_MOD_SYSTEM_OUT_OF_MEMORY                                  "NYXSYS_OUT_OF_MEM"
 #define MSGID_NYX_MOD_SYSTEM_OPEN_ERR                                       "NYXSYS_OPEN_ERR"
 
-/** Mass Storage Mode - MTP */
+/*Mass Storage Mode - MTP */
 #define MSGID_NYX_MOD_MSMMTP_OPEN_ERR                                       "NYXMSM_OPEN_ERR"
 
-/** Ambient Light Sensor */
+/*Ambient Light Sensor */
 #define MSGID_NYX_MOD_ALS_ENABLE_ERR                                        "NYXALS_ENABLE_ERR"
 #define MSGID_NYX_MOD_ALS_DISABLE_ERR                                       "NYXALS_DISABLE_ERR"
 #define MSGID_NYX_MOD_ALS_READ_EVENT_ERR                                    "NYXALS_READ_EVENT_ERR"
 
-/** LED Controller */
+/*LED Controller */
 #define MSGID_NYX_MOD_LED_NODEVICE_ERR                                      "NYXLED_NODEVICE_ERR"
 #define MSGID_NYX_MOD_LED_OPENFILE_ERR                                      "NYXLED_OPENFILE_ERR"
 #define MSGID_NYX_MOD_LED_FILE_CONTENT_ERR                                  "NYXLED_FILECONTENT_ERR"
 
-/** Haptics Controller */
+/*Haptics Controller */
 #define MSGID_NYX_MOD_HAPTICS_ODEVICE_FOUND                                 "NYXHAPTICS_DEVICE_FOUND"
 #define MSGID_NYX_MOD_HAPTICS_NODEVICE_ERR                                  "NYXHAPTICS_NODEVICE_ERR"
 #define MSGID_NYX_MOD_HAPTICS_NOSPECIAL_EFF                                 "NYXHAPTICS_NOSPECIAL_EFF"
@@ -126,5 +126,28 @@
 #define MSGID_NYX_MOD_TP_TOOMANY_ITEMS_ERR                                  "NYXTP_TOOMANY_ITEMS_ERR"
 #define MSGID_NYX_MOD_TP_OUT_OF_MEMORY                                      "NYXTP_OUT_OF_MEM_ERR"
 #define MSGID_NYX_MOD_TP_IGNORING_COORD                                     "NYXTP_IGNORING_COORD"
+/**Touchpanel mtdev*/
+#define MSGID_NYX_QMUX_TP_COORDBUF_ERR         "NYXTP_COORDBUF_ERR"
+#define MSGID_NYX_QMUX_TP_COORDS_ERR           "NYXTP_COORDS_ERR"
+#define MSGID_NYX_QMUX_TP_FINGER_WT            "NYXTP_FINGER_WT"
+#define MSGID_NYX_QMUX_TP_FING_LOW_WT          "NYXTP_FING_LOW_WT"
+#define MSGID_NYX_QMUX_TP_NOTOUCH_ERR          "NYXTP_NOTOUCH_ERR"
+#define MSGID_NYX_QMUX_TP_VBOX_OPEN_ERR        "NYXTP_VBOX_OPEN_ERR"
+#define MSGID_NYX_QMUX_TP_IOCTL_ERR            "NYXTP_IOCTL_ERR"
+#define MSGID_NYX_QMUX_TP_IOCTL_READ_ERR       "NYXTP_IOCTL_READ_ERR"
+#define MSGID_NYX_QMUX_TP_IOCTL_REQUEST_ERR    "NYXTP_IOCTL_REQUEST_ERR"
+#define MSGID_NYX_QMUX_TP_SETPTR_ERR           "NYXTP_SETPTR_ERR"
+#define MSGID_NYX_QMUX_TP_OPEN_FB_ERR          "NYXTP_OPEN_FB_ERR"
+#define MSGID_NYX_QMUX_TP_VSCREEN_INFO_ERR     "NYXTP_FB_VSCREEN_INFO_ERR"
+#define MSGID_NYX_QMUX_TP_OPEN_ERR             "NYXTP_OPEN_ERR"
+#define MSGID_NYX_QMUX_TP_EVENT_HLIMIT_ERR     "NYXTP_EVENT_HLIMIT_ERR"
+#define MSGID_NYX_QMUX_TP_EVENT_VLIMIT_ERR     "NYXTP_EVENT_VLIMIT_ERR"
+#define MSGID_NYX_QMUX_TP_RES_ERR              "NYXTP_DP_RES_ERR"
+#define MSGID_NYX_QMUX_TP_EVT_READ_ERR         "NYXTP_INPUT_EVENT_READ_ERR"
+#define MSGID_NYX_QMUX_TP_ABS_ERR              "NYXTP_ABS_ERR"
+#define MSGID_NYX_QMUX_TP_EVENT_NULL_ERR       "NYXTP_EVENT_NULL_ERR"
+#define MSGID_NYX_QMUX_TP_INVALID_EVENT        "NYXTP_INVALID_EVENT"
+#define MSGID_NYX_QMUX_TP_TOOMANY_ITEMS_ERR    "NYXTP_TOOMANY_ITEMS_ERR"
+#define MSGID_NYX_QMUX_TP_OUT_OF_MEMORY        "NYXTP_OUT_OF_MEM_ERR"
 
 #endif // __NYX__MODULES__MESSAGE__LOG_H__
