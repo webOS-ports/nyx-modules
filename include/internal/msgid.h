@@ -70,4 +70,9 @@
 /*Mass Storage Mode - MTP */
 #define MSGID_NYX_MOD_MSMMTP_OPEN_ERR                                       "NYXMSM_OPEN_ERR"
 
+/*Ambient Light Sensor */
+#define MSGID_NYX_MOD_ALS_ENABLE_ERR                                        "NYXALS_ENABLE_ERR"
+#define MSGID_NYX_MOD_ALS_DISABLE_ERR                                       "NYXALS_DISABLE_ERR"
+#define MSGID_NYX_MOD_ALS_READ_EVENT_ERR                                    "NYXALS_READ_EVENT_ERR"
+
 #endif // __NYX__MODULES__MESSAGE__LOG_H__

@@ -86,3 +86,7 @@ endif()
 if(NYXMOD_OW_MSMMTP)
     add_subdirectory(msm_mtp)
 endif()
+
+if(NYXMOD_OW_ALS)
+    add_subdirectory(als)
+endif()
