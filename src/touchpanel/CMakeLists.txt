@@ -14,23 +14,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-cmake_minimum_required(VERSION 2.8.7)
-
-project(nyx-modules)
-
-include(webOS/webOS)
-include(FindPkgConfig)
-
-webos_modules_init(1 6 2)
-webos_component(7 1 0)
-webos_test_provider(GLIB_TEST)
-webos_include_install_paths()
-
-pkg_check_modules(PMLOG REQUIRED PmLogLib)
-include_directories(${PMLOG_INCLUDE_DIRS})
-webos_add_compiler_flags(ALL ${PMLOG_CFLAGS_OTHER})
-
-include_directories(include/internal)
-
-webos_nyx_module_provider(OW BATTERY CHARGER DEVICEINFO OSINFO SYSTEM DISPLAY SECURITY SECURITY2 MSMMTP ALS LED HAPTICS KEYS TOUCHPANEL TOUCHPANEL_MTDEV)
-add_subdirectory(src)
+webos_build_nyx_module(TouchpanelMain
+		       SOURCES touchpanel.c touchpanel_common.c touchpanel_gestures.c
+		       LIBRARIES ${GLIB2_LDFLAGS} ${PMLOG_LDFLAGS} ${NYXLIB_LDFLAGS} -lrt -lpthread)
