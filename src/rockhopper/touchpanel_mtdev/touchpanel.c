@@ -362,7 +362,11 @@ init_touchpanel(void)
 	struct input_absinfo abs;
 	int  maxX, maxY, sXres, sYres, ret = -1;
     	
+#ifdef TOUCHPANEL_DEVICE
+	touchpanel_event_fd = open(TOUCHPANEL_DEVICE, O_RDWR | O_NONBLOCK);
+#else
 	touchpanel_event_fd = open("/dev/input/touchscreen0", O_RDWR | O_NONBLOCK);
+#endif
 	if(touchpanel_event_fd < 0) {
 		nyx_error("Error in opening touchpanel event device");
 		return -1;
