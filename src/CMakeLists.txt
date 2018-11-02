@@ -43,7 +43,7 @@ if(NYXMOD_OW_BATTERY OR NYXMOD_OW_CHARGER OR NYXMOD_OW_MSMMTP OR NYXMOD_OW_LED O
 endif()
 
 if(NYXMOD_OW_TOUCHPANEL_MTDEV)
-    pkg_check_modules(MTDEV REQUIRED libmtdev)
+    pkg_check_modules(MTDEV REQUIRED mtdev)
     include_directories(${MTDEV_INCLUDE_DIRS})
     webos_add_compiler_flags(ALL ${MTDEV_CFLAGS_OTHER})
 endif()
