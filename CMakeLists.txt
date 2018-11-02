@@ -33,4 +33,9 @@ webos_add_compiler_flags(ALL ${PMLOG_CFLAGS_OTHER})
 include_directories(include/internal)
 
 webos_nyx_module_provider(OW BATTERY CHARGER DEVICEINFO OSINFO SYSTEM DISPLAY SECURITY SECURITY2 MSMMTP ALS LED HAPTICS KEYS TOUCHPANEL TOUCHPANEL_MTDEV)
+
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/machine.cmake)
+	include(${CMAKE_CURRENT_SOURCE_DIR}/src/machine.cmake)
+endif()
+
 add_subdirectory(src)
