@@ -70,13 +70,13 @@ static gchar** read_input_paths(guint *num_paths)
     g_key_file_set_list_separator(keyfile, ';');
 
     if (!g_key_file_load_from_file(keyfile, NYX_CONF_FILE, G_KEY_FILE_NONE, &error)) {
-        nyx_error("Failed to load conf file", 0, MSGID_NYX_MOD_KEYS_CONF_FILE_ERR);
+        nyx_error(MSGID_NYX_MOD_KEYS_CONF_FILE_ERR, 0, "Failed to load conf file");
         g_error_free(error);
         goto cleanup;
     }
 
     if (!g_key_file_has_key(keyfile, NYX_CONF_GROUP_KEYS, NYX_CONF_KEY_PATHS, &error)) {
-        nyx_error("Failed to read input paths from conf file", 0, MSGID_NYX_MOD_KEYS_CONF_FILE_PATH_ERR);
+        nyx_error(MSGID_NYX_MOD_KEYS_CONF_FILE_PATH_ERR, 0, "Failed to read input paths from conf file");
         g_error_free(error);
         goto cleanup;
     }
@@ -103,7 +103,7 @@ void *notifier_thread_func(void *user_data)
         if (ret_val <= 0)
             continue;
 
-        nyx_debug("Got new input event; waking up main thread ..", 0, MSGID_NYX_MOD_KEYS_NEW_INPUT_DEV);
+        nyx_debug(MSGID_NYX_MOD_KEYS_NEW_INPUT_DEV, 0, "Got new input event; waking up main thread ..");
 
         /* wakeup main thread */
         (void) write(keypad_notifier_pipe_fds[1], &event, sizeof(int));
@@ -146,31 +146,48 @@ nyx_error_t keys_release_event(nyx_device_t *d, nyx_event_t *e)
 	return NYX_ERROR_NONE;
 }
 
-static int
-init_keypad(void)
-{
-#ifdef KEYPAD_INPUT_DEVICE
-	keypad_event_fd = open(KEYPAD_INPUT_DEVICE, O_RDWR);
-
-	if (keypad_event_fd < 0)
-	{
-		nyx_error(MSGID_NYX_MOD_KEY_EVENT_ERR, 0, "Error in opening keypad event file");
-		return -1;
-	}
-
-	return 0;
-#else
-	return -1;
-#endif
-}
-
 nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
 {
+    guint num_paths;
+    gchar **input_paths;
+    gchar *path;
+    int fd, n;
+
 	if (NULL == d)
 	{
 	    nyx_error(MSGID_NYX_MOD_KEYS_OPEN_ERR, 0,"Keys device open error.");
 	    return NYX_ERROR_INVALID_VALUE;
 	}
+
+    input_paths = read_input_paths(&num_paths);
+
+    if (input_paths == NULL)
+    {
+        return NYX_ERROR_NOT_FOUND;
+    }
+
+    for (n = 0; n < num_paths; n++) {
+        path = input_paths[n];
+
+        if (num_keypad_event_fd == MAX_INPUT_NODES) {
+            nyx_warn(MSGID_NYX_MOD_KEYS_OPEN_ERR, 0, "Reached maximum number of input nodes. Skipping others.");
+            break;
+        }
+
+        nyx_debug(MSGID_NYX_MOD_KEYS_OPEN_ERR, 0, "Initializing input device %s", path);
+
+        fd = open(path, O_RDONLY);
+        if (fd < 0) {
+            nyx_error(MSGID_NYX_MOD_KEYS_OPEN_ERR, 0, "Could not open keypad event file at %s", path);
+            continue;
+        }
+
+        keypad_event_fd[num_keypad_event_fd] = fd;
+        num_keypad_event_fd++;
+    }
+
+    if (num_keypad_event_fd == 0)
+        return NYX_ERROR_NOT_FOUND;
 
 	keys_device_t *keys_device = (keys_device_t *) calloc(sizeof(keys_device_t),
 	                             1);
@@ -181,8 +198,6 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
 		return NYX_ERROR_OUT_OF_MEMORY;
 	}
 
-	init_keypad();
-
 	nyx_module_register_method(i, (nyx_device_t *) keys_device,
 	                           NYX_GET_EVENT_SOURCE_MODULE_METHOD, "keys_get_event_source");
 	nyx_module_register_method(i, (nyx_device_t *) keys_device,
@@ -192,8 +207,14 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
 
 	*d = (nyx_device_t *) keys_device;
 
-	return NYX_ERROR_NONE;
+    notifier_thread = pthread_create(&notifier_thread, NULL, notifier_thread_func, NULL);
+    pipe2(&keypad_notifier_pipe_fds, 0);
 
+    return NYX_ERROR_NONE;
+
+fail_unlock_settings:
+
+    return NYX_ERROR_GENERIC;
 }
 
 nyx_error_t nyx_module_close(nyx_device_t *d)
@@ -210,7 +231,7 @@ nyx_error_t nyx_module_close(nyx_device_t *d)
 		keys_release_event(d, (nyx_event_t *) keys_device->current_event_ptr);
 	}
 
-	nyx_debug("Freeing keys %p", d);
+	nyx_debug(MSGID_NYX_MOD_KEYS_OPEN_ERR, 0, "Freeing keys %p", d);
 	free(d);
 
 	return NYX_ERROR_NONE;
@@ -228,53 +249,56 @@ nyx_error_t keys_get_event_source(nyx_device_t *d, int *f)
 		return NYX_ERROR_INVALID_VALUE;
 	}
 
-	*f = keypad_event_fd;
+    *f = keypad_notifier_pipe_fds[0];
 
-	return NYX_ERROR_NONE;
+    return NYX_ERROR_NONE;
 }
 
-struct pollfd fds[1];
-
-int
-read_input_event(InputEvent_t *pEvents, int maxEvents)
+int read_input_event(InputEvent_t* pEvents, int maxEvents)
 {
-	int numEvents = 0;
-	int rd = 0;
+    int numEvents = 0;
+    int rd = 0, n, event;
+    struct pollfd fds[MAX_INPUT_NODES];
 
 	if (pEvents == NULL)
 	{
 		return -1;
 	}
 
-	fds[0].fd = keypad_event_fd;
-	fds[0].events = POLLIN;
+    /* clear notifier pipe */
+    (void) read(keypad_notifier_pipe_fds[0], &event, sizeof(int));
 
-	int ret_val = poll(fds, 1, 0);
+    for (n = 0; n < num_keypad_event_fd; n++) {
+        fds[n].fd = keypad_event_fd[n];
+        fds[n].events = POLLIN;
+    }
 
-	if (ret_val <= 0)
-	{
-		return 0;
-	}
+    int ret_val = poll(fds, num_keypad_event_fd, 0);
+    if (ret_val <= 0)
+        return 0;
 
-	if (fds[0].revents & POLLIN)
-	{
-		/* keep looping if get EINTR */
-		for (;;)
-		{
-			rd = read(fds[0].fd, pEvents, sizeof(InputEvent_t) * maxEvents);
+    for (n = 0; n < num_keypad_event_fd; n++)
+    {
+        if (fds[n].revents & POLLIN) 
+        {
+            /* keep looping if get EINTR */
+            for (;;) 
+            {
+                rd = read(fds[n].fd, pEvents, sizeof(InputEvent_t) * maxEvents);
 
-			if (rd > 0)
-			{
-				numEvents += rd / sizeof(InputEvent_t);
-				break;
-			}
-			else if (rd < 0 && errno != EINTR)
-			{
-				nyx_error(MSGID_NYX_MOD_KEY_EVENT_READ_ERR, 0, "Failed to read events from keypad event file");
-				return -1;
-			}
-		}
-	}
+                if (rd > 0) 
+                {
+                    numEvents += rd / sizeof(InputEvent_t);
+                    break;
+                }
+                else if (rd < 0 && errno != EINTR) 
+                {
+    				nyx_error(MSGID_NYX_MOD_KEY_EVENT_READ_ERR, 0, "Failed to read events from keypad event file");
+                    break;
+                }
+            }
+        }
+    }
 
 	return numEvents;
 }
@@ -287,6 +311,8 @@ nyx_error_t keys_get_event(nyx_device_t *d, nyx_event_t **e)
 
 	static int event_count = 0;
 	static int event_iter = 0;
+
+    int rd = 0;
 
 	keys_device_t *keys_device = (keys_device_t *) d;
 

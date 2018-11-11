@@ -97,6 +97,10 @@ if(NYXMOD_OW_ALS)
     add_subdirectory(als)
 endif()
 
+if(NYXMOD_OW_KEYS)
+    add_subdirectory(keys)
+endif()
+
 if(NYXMOD_OW_LED)
     add_subdirectory(led_controller)
 endif()
