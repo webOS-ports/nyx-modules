@@ -19,7 +19,7 @@ if(${WEBOS_TARGET_MACHINE_IMPL} STREQUAL emulator)
 	webos_build_nyx_module(KeysMain 
 						   SOURCES keys_common.c emulator/keys.c
 						   LIBRARIES ${GLIB2_LDFLAGS} ${PMLOG_LDFLAGS} ${NYXLIB_LDFLAGS} -lrt -lpthread)
-elseif(${WEBOS_TARGET_MACHINE_IMPL} STREQUAL device)
+elseif(${WEBOS_TARGET_MACHINE_IMPL} STREQUAL hardware)
 	webos_build_nyx_module(KeysMain 
 						   SOURCES keys_common.c device/keys.c
 						   LIBRARIES ${GLIB2_LDFLAGS} ${PMLOG_LDFLAGS} ${NYXLIB_LDFLAGS} -lrt -lpthread)
