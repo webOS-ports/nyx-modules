@@ -35,7 +35,7 @@
 NYX_DECLARE_MODULE(NYX_DEVICE_HAPTICS, "Main");
 
 typedef struct {
-	nyx_haptics_device_t *parent;
+	nyx_device_t _parent;
 	const char *path;
 	guint fulltimeoutwatch;
 	guint smalltimeoutwatch;
