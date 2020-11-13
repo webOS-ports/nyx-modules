@@ -46,6 +46,7 @@ if(NYXMOD_OW_TOUCHPANEL_MTDEV)
     pkg_check_modules(MTDEV REQUIRED mtdev)
     include_directories(${MTDEV_INCLUDE_DIRS})
     webos_add_compiler_flags(ALL ${MTDEV_CFLAGS_OTHER})
+    add_subdirectory(touchpanel_mtdev)
 endif()
 
 webos_add_linker_options(ALL --no-undefined --as-needed)
@@ -82,6 +83,10 @@ endif()
 
 if(NYXMOD_OW_SYSTEM)
     add_subdirectory(system)
+endif()
+
+if(NYXMOD_OW_TOUCHPANEL)
+    add_subdirectory(touchpanel)
 endif()
 
 if(NYXMOD_OW_OSINFO)
