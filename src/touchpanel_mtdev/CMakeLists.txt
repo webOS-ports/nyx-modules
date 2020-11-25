@@ -18,4 +18,4 @@
 
 webos_build_nyx_module(TouchpanelMain
 		       SOURCES touchpanel.c touchpanel_common.c touchpanel_gestures.c
-		       LIBRARIES ${GLIB2_LDFLAGS} ${PMLOG_LDFLAGS} ${NYXLIB_LDFLAGS} -lrt -lpthread)
+		       LIBRARIES ${GLIB2_LDFLAGS} ${PMLOG_LDFLAGS} ${NYXLIB_LDFLAGS} ${MTDEV_LDFLAGS} -lrt -lpthread)
