@@ -36,7 +36,8 @@ NYX_DECLARE_MODULE(NYX_DEVICE_HAPTICS, "Main");
 
 typedef struct {
 	nyx_device_t _parent;
-	const char *path;
+	const char *path;             /* path for duration */
+	const char *path_activation;  /* path for activating the vibrator */
 	guint fulltimeoutwatch;
 	guint smalltimeoutwatch;
 	guint don;
@@ -46,7 +47,7 @@ typedef struct {
 } haptics_device_t;
 
 
-static const char* find_haptics_device(void)
+static const char* find_haptics_device_timed_output(void)
 {
 	struct udev *udev;
 	struct udev_enumerate *enumerator;
@@ -89,9 +90,36 @@ static const char* find_haptics_device(void)
 	return path;
 }
 
+static const char* find_haptics_device_leds(void)
+{
+	struct udev *udev;
+	const char *path = NULL;
+	struct udev_device *device;
+
+	udev = udev_new();
+	if (!udev) {
+		nyx_error(MSGID_NYX_MOD_UDEV_ERR, 0, "Could not initialize udev component");
+		return NULL;
+	}
+
+	device = udev_device_new_from_syspath(udev, "/sys/class/leds/vibrator");
+	if (!device) {
+		nyx_error(MSGID_NYX_MOD_HAPTICS_NODEVICE_ERR, 0, "Did not find any devices matching the vibrator subsystem");
+	}
+	else {
+		nyx_debug(MSGID_NYX_MOD_HAPTICS_ODEVICE_FOUND, 0, "Found possible vibrator device: %s", "/sys/class/leds/vibrator");
+		path = g_strdup(udev_device_get_syspath(device));
+		udev_device_unref(device);
+	}
+	udev_unref(udev);
+
+	return path;
+}
+
 nyx_error_t nyx_module_open(nyx_instance_t instance, nyx_device_t** device)
 {
 	const char *vibrator_path = NULL;
+	const char *path_activation = NULL;
 	haptics_device_t *haptics_device;
 
 	haptics_device = g_new0(haptics_device_t, 1);
@@ -108,13 +136,26 @@ nyx_error_t nyx_module_open(nyx_instance_t instance, nyx_device_t** device)
 	nyx_module_register_method(instance, (nyx_device_t*) haptics_device,
 			NYX_HAPTICS_GET_EFFECT_ID_MODULE_METHOD, "haptics_get_effect_id");
 
-	vibrator_path = find_haptics_device();
+	vibrator_path = find_haptics_device_timed_output();
+	if (vibrator_path) {
+		/* found it ! */
+		haptics_device->path = g_build_filename(vibrator_path, "enable", NULL);
+		haptics_device->path_activation = NULL; /* for clarity's sake */
+	}
+	else {
+		/* try the leds class vibrator */
+		vibrator_path = find_haptics_device_leds();
+		
+		if (vibrator_path) {
+			haptics_device->path = g_build_filename(vibrator_path, "duration", NULL);
+			haptics_device->path_activation = g_build_filename(vibrator_path, "activate", NULL);
+		}
+	}
 	if (!vibrator_path) {
 		nyx_error(MSGID_NYX_MOD_HAPTICS_NODEVICE_ERR, 0, "Could not find a vibrator device");
 		return NYX_ERROR_DEVICE_UNAVAILABLE;
 	}
 
-	haptics_device->path = g_build_filename(vibrator_path, "enable", NULL);
 	g_free(vibrator_path);
 
 	*device = (nyx_device_t*) haptics_device;
@@ -130,6 +171,7 @@ nyx_error_t nyx_module_close(nyx_device_t* device)
 		return NYX_ERROR_INVALID_HANDLE;
 
 	g_free(haptics_device->path);
+	if(haptics_device->path_activation) g_free(haptics_device->path_activation);
 	g_free(haptics_device);
 
 	return NYX_ERROR_NONE;
@@ -162,6 +204,10 @@ static gboolean enable_vibrator(haptics_device_t *device, int duration)
 
 	gchar *content = g_strdup_printf("%d", duration);
 	ret = file_set_contents(device->path, content, strlen(content));
+
+	if(TRUE==ret && device->path_activation) {
+		ret = file_set_contents(device->path_activation, "1", 1);
+	}
 
 	device->on = (duration > 0);
 
