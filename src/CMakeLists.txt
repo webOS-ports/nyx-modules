@@ -32,7 +32,7 @@ pkg_check_modules(GIO REQUIRED gio-2.0)
 include_directories(${GIO_INCLUDE_DIRS})
 webos_add_compiler_flags(ALL ${GIO_CFLAGS_OTHER})
 
-if(NYXMOD_OW_BATTERY OR NYXMOD_OW_CHARGER)
+if(NYXMOD_OW_BATTERY OR NYXMOD_OW_CHARGER OR NYXMOD_OW_MSMMTP OR NYXMOD_OW_LED OR NYXMOD_OW_HAPTICS)
     pkg_check_modules(UDEV REQUIRED libudev)
     include_directories(${UDEV_INCLUDE_DIRS})
     webos_add_compiler_flags(ALL ${UDEV_CFLAGS_OTHER})
@@ -83,4 +83,36 @@ endif()
 
 if(NYXMOD_OW_CEC)
     add_subdirectory(cec)
+endif()
+
+# Modules added for LuneOS
+if(NYXMOD_OW_TOUCHPANEL_MTDEV)
+    pkg_check_modules(MTDEV REQUIRED mtdev)
+    include_directories(${MTDEV_INCLUDE_DIRS})
+    webos_add_compiler_flags(ALL ${MTDEV_CFLAGS_OTHER})
+    add_subdirectory(touchpanel_mtdev)
+endif()
+
+if(NYXMOD_OW_TOUCHPANEL)
+    add_subdirectory(touchpanel)
+endif()
+
+if(NYXMOD_OW_MSMMTP)
+    add_subdirectory(msm_mtp)
+endif()
+
+if(NYXMOD_OW_ALS)
+    add_subdirectory(als)
+endif()
+
+if(NYXMOD_OW_KEYS)
+    add_subdirectory(keys)
+endif()
+
+if(NYXMOD_OW_LED)
+    add_subdirectory(led_controller)
+endif()
+
+if(NYXMOD_OW_HAPTICS)
+    add_subdirectory(haptics_timedoutput)
 endif()
