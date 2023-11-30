@@ -65,7 +65,7 @@ static const char *const  read_bdaddr =
     "hcitool dev 2>&1 | awk '/hci0/ {print $2}'";
 
 static const char *const  DEVUID_PATH =
-               "/sys/devices/soc0/serial_number";
+               "/etc/machine-id";
 
 NYX_DECLARE_MODULE(NYX_DEVICE_DEVICE_INFO, "DeviceInfo");
 
