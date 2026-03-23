@@ -108,6 +108,11 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
 nyx_error_t nyx_module_close(nyx_device_t *d)
 {
 	rtc_close();
+	if (nyxDev)
+	{
+		free(nyxDev);
+		nyxDev = NULL;
+	}
 	return NYX_ERROR_NONE;
 }
 

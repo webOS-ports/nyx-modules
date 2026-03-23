@@ -503,6 +503,14 @@ nyx_error_t nyx_module_close(nyx_device_handle_t d)
 		device_info->devuid_str = NULL;
 	}
 
+	/* product_name and device_name point to the same allocation */
+	if (NULL != device_info->product_name)
+	{
+		free((void *) device_info->product_name);
+		device_info->product_name = NULL;
+		device_info->device_name = NULL;
+	}
+
 	free((void *) device_info->nduid_str);
 	free(device_info);
 	return NYX_ERROR_NONE;

@@ -307,6 +307,13 @@ void _detect_charger_sysfs_paths()
 		snprintf(batt_present_path, PATH_LEN, "%s/present", battery_sysfs_path);
 		snprintf(batt_status_path, PATH_LEN, "%s/status", battery_sysfs_path);
 	}
+
+	/* Free allocated paths after use */
+	g_free(battery_sysfs_path);
+	g_free(charger_usb_sysfs_path);
+	g_free(charger_ac_sysfs_path);
+	g_free(charger_touch_sysfs_path);
+	g_free(charger_wireless_sysfs_path);
 }
 
 static void _charger_cleanup(void)

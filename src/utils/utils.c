@@ -99,10 +99,11 @@ end:
 char *find_power_supply_sysfs_path(const char *device_type)
 {
 	GError *gerror = NULL;
-	GDir *dir;
-	GDir *subdir;
+	GDir *dir = NULL;
+	GDir *subdir = NULL;
 	gchar *dir_path = NULL;
 	gchar *full_path = NULL;
+	gchar *result = NULL;
 	const char *sub_dir_name;
 	const char *file_name;
 	char file_contents[64];
@@ -135,6 +136,8 @@ char *find_power_supply_sysfs_path(const char *device_type)
 			{
 				nyx_error(MSGID_NYX_MOD_GET_DIR_ERR, 0, "error: %s", gerror->message);
 				g_error_free(gerror);
+				g_free(dir_path);
+				g_dir_close(dir);
 				return NULL;
 			}
 
@@ -147,18 +150,27 @@ char *find_power_supply_sysfs_path(const char *device_type)
 
 					if (strcmp(file_contents, device_type) == 0)
 					{
-						return dir_path;
+						result = dir_path;
+						dir_path = NULL;  /* Prevent freeing below */
+						g_free(full_path);
+						g_dir_close(subdir);
+						g_dir_close(dir);
+						return result;
 					}
 
 					g_free(full_path);
 					full_path = NULL;
 				}
 			}
+
+			g_dir_close(subdir);
+			subdir = NULL;
 		}
 
 		g_free(dir_path);
 		dir_path = NULL;
 	}
 
+	g_dir_close(dir);
 	return NULL;
 }
