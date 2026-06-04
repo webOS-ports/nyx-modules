@@ -180,14 +180,27 @@ int battery_voltage(void)
  */
 int battery_current(void)
 {
-	signed int current;
+	double current;
 
-	if ((current = nyx_utils_read_value(batt_current_path)) < 0)
+	/*
+	 * The Linux power_supply class exports current_now as a *signed*
+	 * value in microamps: positive while the battery is charging,
+	 * negative while it is discharging. nyx_utils_read_value() collapses
+	 * "value is negative" with "read failed", which means battery_current
+	 * returns -1 on every Linux-mainline target the moment the device
+	 * runs on battery — masking the real value and confusing
+	 * batteryStatusQuery consumers in cardshell / powerd.
+	 *
+	 * Use FileGetDouble() instead, which signals errors via its return
+	 * code and stores the parsed value through the out-parameter, so
+	 * negative readings are passed through cleanly.
+	 */
+	if (FileGetDouble(batt_current_path, &current) < 0)
 	{
 		return -1;
 	}
 
-	return current;
+	return (int)current;
 }
 
 /**
