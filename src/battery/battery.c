@@ -317,7 +317,23 @@ gboolean _handle_event(GIOChannel *channel, GIOCondition condition,
 
 static void detect_battery_sysfs_paths()
 {
+#ifdef BATTERY_SYSFS_PATH
+	/*
+	 * Honour the BATTERY_SYSFS_PATH define from the machine-specific
+	 * cmake include (e.g. meta-luneos's tenderloin.cmake). Bypasses
+	 * the directory walk in find_power_supply_sysfs_path(), which on
+	 * boards that expose more than one type=Battery power_supply
+	 * picks whichever one g_dir_read_name() returns first — order
+	 * depends on the underlying filesystem and is not deterministic.
+	 *
+	 * The HP TouchPad has two A6 microcontrollers (a6-0, a6-1) both
+	 * registered by the kernel as power_supply type=Battery; only
+	 * a6-0 actually has a battery wired to it.
+	 */
+	battery_sysfs_path = g_strdup(BATTERY_SYSFS_PATH);
+#else
 	battery_sysfs_path = find_power_supply_sysfs_path("Battery");
+#endif
 
 	if (battery_sysfs_path)
 	{

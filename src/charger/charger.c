@@ -395,11 +395,40 @@ void _charger_init_events()
 
 void _detect_charger_sysfs_paths()
 {
+	/*
+	 * Each path honours an optional compile-time override from the
+	 * machine-specific cmake include (e.g. meta-luneos's tenderloin.cmake),
+	 * falling back to a directory walk of /sys/class/power_supply when the
+	 * override is not set. Pinning the path avoids the auto-detect picking
+	 * the wrong device when a board exposes more than one power_supply of
+	 * the same type (e.g. two type=Battery entries, or a "Mains" charger
+	 * sharing the namespace with a separately-named USB BC1.2 detector).
+	 */
+#ifdef BATTERY_SYSFS_PATH
+	char *battery_sysfs_path = g_strdup(BATTERY_SYSFS_PATH);
+#else
 	char *battery_sysfs_path = find_power_supply_sysfs_path("Battery");
+#endif
+#ifdef CHARGER_USB_SYSFS_PATH
+	char *charger_usb_sysfs_path = g_strdup(CHARGER_USB_SYSFS_PATH);
+#else
 	char *charger_usb_sysfs_path = find_power_supply_sysfs_path("USB");
+#endif
+#ifdef CHARGER_AC_SYSFS_PATH
+	char *charger_ac_sysfs_path = g_strdup(CHARGER_AC_SYSFS_PATH);
+#else
 	char *charger_ac_sysfs_path = find_power_supply_sysfs_path("Mains");
+#endif
+#ifdef CHARGER_TOUCH_SYSFS_PATH
+	char *charger_touch_sysfs_path = g_strdup(CHARGER_TOUCH_SYSFS_PATH);
+#else
 	char *charger_touch_sysfs_path = find_power_supply_sysfs_path("Touch");
+#endif
+#ifdef CHARGER_WIRELESS_SYSFS_PATH
+	char *charger_wireless_sysfs_path = g_strdup(CHARGER_WIRELESS_SYSFS_PATH);
+#else
 	char *charger_wireless_sysfs_path = find_power_supply_sysfs_path("Wireless");
+#endif
 
 	if (charger_usb_sysfs_path)
 	{
