@@ -65,6 +65,7 @@ static gchar** read_input_paths(guint *num_paths)
     GError *error = NULL;
     GKeyFile *keyfile = NULL;
     gchar **result = NULL;
+    gsize path_count = 0;
 
     keyfile = g_key_file_new();
     g_key_file_set_list_separator(keyfile, ';');
@@ -81,7 +82,8 @@ static gchar** read_input_paths(guint *num_paths)
         goto cleanup;
     }
 
-    result = g_key_file_get_string_list(keyfile, NYX_CONF_GROUP_KEYS, NYX_CONF_KEY_PATHS, num_paths, NULL);
+    result = g_key_file_get_string_list(keyfile, NYX_CONF_GROUP_KEYS, NYX_CONF_KEY_PATHS, &path_count, NULL);
+    *num_paths = (guint) path_count;
 
 cleanup:
     g_key_file_free(keyfile);
@@ -208,7 +210,7 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
 	*d = (nyx_device_t *) keys_device;
 
     notifier_thread = pthread_create(&notifier_thread, NULL, notifier_thread_func, NULL);
-    pipe2(&keypad_notifier_pipe_fds, 0);
+    pipe2(keypad_notifier_pipe_fds, 0);
 
     return NYX_ERROR_NONE;
 
