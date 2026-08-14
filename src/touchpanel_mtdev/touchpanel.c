@@ -90,7 +90,7 @@ typedef struct
 	int posY;
 	int tracking_id;
 	int previous_tracking_id;
-	struct finger_t *nyx_finger;
+	finger_t *nyx_finger;
 } mt_slot_t;
 struct mtdev *ts_mtdev = NULL;
 /*
@@ -444,7 +444,7 @@ init_touchpanel(void)
         {
             mt_slots[iSlot].tracking_id = -1;
             mt_slots[iSlot].previous_tracking_id = -1;
-            mt_slots[iSlot].nyx_finger = -1;
+            mt_slots[iSlot].nyx_finger = NULL;
         }
     }
 

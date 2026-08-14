@@ -130,4 +130,13 @@ void gesture_state_machine(int *pXCoords, int *pYCoords,
                            int fingerCount, const time_stamp_t *pTime,
                            input_event_t *events, int *numEvents);
 
+/* Used by the mtdev slot handling in touchpanel.c, which tracks the fingers
+   itself instead of going through gesture_state_machine(). */
+finger_t *add_new_finger(int x, int y, int weight,
+                         const time_stamp_t *pCurTime);
+void update_finger(finger_t *finger, int x, int y, int weight,
+                   const time_stamp_t *pCurTime);
+void gesture_state_machine_process(const time_stamp_t *pCurTime,
+                                   input_event_t *events, int *numEvents);
+
 #endif  /* __TOUCHPANEL_GESTURES_PRV_H */
