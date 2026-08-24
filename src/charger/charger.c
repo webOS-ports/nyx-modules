@@ -33,6 +33,7 @@
 #include <nyx/nyx_module.h>
 #include <nyx/module/nyx_utils.h>
 #include "msgid.h"
+#include "nyx_conf.h"
 
 #define STATUS_LEN 64
 #define PATH_LEN 128
@@ -404,21 +405,36 @@ void _detect_charger_sysfs_paths()
 	 * the same type (e.g. two type=Battery entries, or a "Mains" charger
 	 * sharing the namespace with a separately-named USB BC1.2 detector).
 	 */
+	char *battery_sysfs_path = nyx_conf_get_path("module.battery", "sysfs_path");
+
+	if (!battery_sysfs_path)
+	{
 #ifdef BATTERY_SYSFS_PATH
-	char *battery_sysfs_path = g_strdup(BATTERY_SYSFS_PATH);
+		battery_sysfs_path = g_strdup(BATTERY_SYSFS_PATH);
 #else
-	char *battery_sysfs_path = find_power_supply_sysfs_path("Battery");
+		battery_sysfs_path = find_power_supply_sysfs_path("Battery");
 #endif
+	}
+	char *charger_usb_sysfs_path = nyx_conf_get_path("module.charger", "usb_sysfs_path");
+
+	if (!charger_usb_sysfs_path)
+	{
 #ifdef CHARGER_USB_SYSFS_PATH
-	char *charger_usb_sysfs_path = g_strdup(CHARGER_USB_SYSFS_PATH);
+		charger_usb_sysfs_path = g_strdup(CHARGER_USB_SYSFS_PATH);
 #else
-	char *charger_usb_sysfs_path = find_power_supply_sysfs_path("USB");
+		charger_usb_sysfs_path = find_power_supply_sysfs_path("USB");
 #endif
+	}
+	char *charger_ac_sysfs_path = nyx_conf_get_path("module.charger", "ac_sysfs_path");
+
+	if (!charger_ac_sysfs_path)
+	{
 #ifdef CHARGER_AC_SYSFS_PATH
-	char *charger_ac_sysfs_path = g_strdup(CHARGER_AC_SYSFS_PATH);
+		charger_ac_sysfs_path = g_strdup(CHARGER_AC_SYSFS_PATH);
 #else
-	char *charger_ac_sysfs_path = find_power_supply_sysfs_path("Mains");
+		charger_ac_sysfs_path = find_power_supply_sysfs_path("Mains");
 #endif
+	}
 #ifdef CHARGER_TOUCH_SYSFS_PATH
 	char *charger_touch_sysfs_path = g_strdup(CHARGER_TOUCH_SYSFS_PATH);
 #else

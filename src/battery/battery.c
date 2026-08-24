@@ -33,6 +33,7 @@
 #include <nyx/module/nyx_utils.h>
 #include <nyx/module/nyx_log.h>
 #include "msgid.h"
+#include "nyx_conf.h"
 
 #include <glib.h>
 #include <libudev.h>
@@ -330,6 +331,11 @@ gboolean _handle_event(GIOChannel *channel, GIOCondition condition,
 
 static void detect_battery_sysfs_paths()
 {
+	/* Runtime value from luneos-device-config wins over both. */
+	battery_sysfs_path = nyx_conf_get_path("module.battery", "sysfs_path");
+
+	if (!battery_sysfs_path)
+	{
 #ifdef BATTERY_SYSFS_PATH
 	/*
 	 * Honour the BATTERY_SYSFS_PATH define from the machine-specific
@@ -343,10 +349,11 @@ static void detect_battery_sysfs_paths()
 	 * registered by the kernel as power_supply type=Battery; only
 	 * a6-0 actually has a battery wired to it.
 	 */
-	battery_sysfs_path = g_strdup(BATTERY_SYSFS_PATH);
+		battery_sysfs_path = g_strdup(BATTERY_SYSFS_PATH);
 #else
-	battery_sysfs_path = find_power_supply_sysfs_path("Battery");
+		battery_sysfs_path = find_power_supply_sysfs_path("Battery");
 #endif
+	}
 
 	if (battery_sysfs_path)
 	{

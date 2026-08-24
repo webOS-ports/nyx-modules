@@ -51,6 +51,7 @@
 
 #include "touchpanel_gestures.h"
 #include "msgid.h"
+#include "nyx_conf.h"
 
 /* Later versions of nyx_utils.h no longer define this macro */
 #undef return_if
@@ -387,11 +388,26 @@ init_touchpanel(void)
 	struct input_absinfo abs;
 	int  maxX, maxY, sXres, sYres, ret = -1;
 
+	/*
+	 * luneos-device-config derives the touchscreen node - exactly one input
+	 * device advertises ID_INPUT_TOUCHSCREEN, so it needs no per-device
+	 * knowledge - and writes it here. Fall back to the compile-time define
+	 * for the machines still built that way, then to the udev symlink.
+	 */
+	gchar *tp_conf = nyx_conf_get_path("module.touchpanel", "path");
+	const char *tp_path = tp_conf;
+
+	if (!tp_path)
+	{
 #ifdef TOUCHPANEL_DEVICE
-	touchpanel_event_fd = open(TOUCHPANEL_DEVICE, O_RDWR | O_NONBLOCK);
+		tp_path = TOUCHPANEL_DEVICE;
 #else
-	touchpanel_event_fd = open("/dev/input/touchscreen0", O_RDWR | O_NONBLOCK);
+		tp_path = "/dev/input/touchscreen0";
 #endif
+	}
+
+	touchpanel_event_fd = open(tp_path, O_RDWR | O_NONBLOCK);
+	g_free(tp_conf);
 
 	if (touchpanel_event_fd < 0)
 	{
