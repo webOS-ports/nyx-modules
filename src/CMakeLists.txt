@@ -123,3 +123,20 @@ endif()
 # built by the other recipe entirely, which is exactly where a way to poke the
 # notification LED is most wanted.
 add_subdirectory(led_controller_test)
+
+# The torch has two backends, so like the LED controller it needs a per-machine
+# owner. Here it is the sysfs one; NYXMOD_OW_LEDTORCH FALSE hands it to
+# nyx-modules-hybris, which drives the Android camera service instead - the
+# route that works where /sys/class/leds belongs to the Android side.
+#
+# Defaulted rather than required of all 57 machine files: sysfs is the right
+# answer for every native device, and a halium machine that needs the other
+# backend says so explicitly.
+if(NOT DEFINED NYXMOD_OW_LEDTORCH)
+    set(NYXMOD_OW_LEDTORCH TRUE)
+endif()
+
+if(NYXMOD_OW_LEDTORCH)
+    add_subdirectory(led_torch)
+endif()
+add_subdirectory(led_test)
