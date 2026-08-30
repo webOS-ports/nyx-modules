@@ -116,3 +116,10 @@ endif()
 if(NYXMOD_OW_HAPTICS)
     add_subdirectory(haptics_timedoutput)
 endif()
+
+# Not gated on NYXMOD_OW_LED. That flag says which of nyx-modules and
+# nyx-modules-hybris provides the LED module, and the tool is a client of
+# whichever won - on a hybris machine the flag is FALSE and the LED module is
+# built by the other recipe entirely, which is exactly where a way to poke the
+# notification LED is most wanted.
+add_subdirectory(led_controller_test)
