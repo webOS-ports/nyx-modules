@@ -122,11 +122,16 @@ void updateDataCallback(std::vector<std::string> resp)
     nyx_info("CEC_NYX_DEVICE", 0, "%s", __FUNCTION__);
     if (!nyx_cec_cbs) return;
     nyx_cec_response_t obj;
-    obj.size = resp.size();
+    std::size_t count = resp.size();
 
-    for (std::size_t i=0; i<resp.size(); ++i)
+    if (count > NYX_CEC_RESPONSE_COUNT)
+        count = NYX_CEC_RESPONSE_COUNT;
+
+    obj.size = count;
+
+    for (std::size_t i=0; i<count; ++i)
     {
-        strcpy(obj.responses[i], resp[i].c_str());
+        snprintf(obj.responses[i], NYX_CEC_RESPONSE_LEN, "%s", resp[i].c_str());
     }
     (* (nyx_cec_cbs->response_cb))(&obj);
 }
