@@ -28,9 +28,10 @@
 
 #define GPS_MOCK_INFO         "GPSMOCK"
 #define DEFAULT_LATENCY       2
-static const char* mock_conf_path_name = "/etc/location/mock.conf";
+static const char* const mock_conf_path_name G_GNUC_UNUSED =
+    "/etc/location/mock.conf";
 
-static GKeyFile *load_conf_file(const char *file_path_name)
+static inline GKeyFile *load_conf_file(const char *file_path_name)
 {
     GError *error = NULL;
     GKeyFile *keyfile = g_key_file_new();
@@ -46,7 +47,7 @@ static GKeyFile *load_conf_file(const char *file_path_name)
     return keyfile;
 }
 
-static bool save_conf_data(GKeyFile *keyfile, const char *file_path_name)
+static inline bool save_conf_data(GKeyFile *keyfile, const char *file_path_name)
 {
     gsize dataStringLen = 0;
     GError *error = NULL;
@@ -65,7 +66,7 @@ static bool save_conf_data(GKeyFile *keyfile, const char *file_path_name)
     return ret;
 }
 
-static GKeyFile *open_conf_file(const char *file_path_name)
+static inline GKeyFile *open_conf_file(const char *file_path_name)
 {
     GKeyFile *keyfile = load_conf_file(file_path_name);
 

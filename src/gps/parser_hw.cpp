@@ -34,8 +34,8 @@
 #include "gps_device.h"
 
 ParserHW::ParserHW()
-  : mParserThreadPoolObj(nullptr)
-  , mParserRequested(false)
+  : mParserRequested(false)
+  , mParserThreadPoolObj(nullptr)
 {
     mGPSDeviceObj = GPSDevice::getInstance();
 }
