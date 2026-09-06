@@ -15,6 +15,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <stdbool.h>
+#include <string.h>
 #include <dirent.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -108,7 +109,8 @@ void *notifier_thread_func(void *user_data)
         nyx_debug("Got new input event; waking up main thread ..");
 
         /* wakeup main thread */
-        (void) write(keypad_notifier_pipe_fds[1], &event, sizeof(int));
+        if (write(keypad_notifier_pipe_fds[1], &event, sizeof(int)) < 0)
+            nyx_debug("Failed to wake main thread: %s", strerror(errno));
     }
 
     return NULL;
@@ -189,7 +191,9 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
     }
 
     if (num_keypad_event_fd == 0)
+    {
         return NYX_ERROR_NOT_FOUND;
+    }
 
 	keys_device_t *keys_device = (keys_device_t *) calloc(sizeof(keys_device_t),
 	                             1);
@@ -209,14 +213,19 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
 
 	*d = (nyx_device_t *) keys_device;
 
-    notifier_thread = pthread_create(&notifier_thread, NULL, notifier_thread_func, NULL);
-    pipe2(keypad_notifier_pipe_fds, 0);
+    if (pipe2(keypad_notifier_pipe_fds, 0) < 0)
+    {
+        nyx_error(MSGID_NYX_MOD_KEYS_OPEN_ERR, 0, "Failed to create notifier pipe");
+        return NYX_ERROR_GENERIC;
+    }
+
+    if (pthread_create(&notifier_thread, NULL, notifier_thread_func, NULL) != 0)
+    {
+        nyx_error(MSGID_NYX_MOD_KEYS_OPEN_ERR, 0, "Failed to create notifier thread");
+        return NYX_ERROR_GENERIC;
+    }
 
     return NYX_ERROR_NONE;
-
-fail_unlock_settings:
-
-    return NYX_ERROR_GENERIC;
 }
 
 nyx_error_t nyx_module_close(nyx_device_t *d)
@@ -268,7 +277,8 @@ int read_input_event(InputEvent_t* pEvents, int maxEvents)
 	}
 
     /* clear notifier pipe */
-    (void) read(keypad_notifier_pipe_fds[0], &event, sizeof(int));
+    if (read(keypad_notifier_pipe_fds[0], &event, sizeof(int)) < 0)
+        nyx_debug("Failed to drain notifier pipe: %s", strerror(errno));
 
     for (n = 0; n < num_keypad_event_fd; n++) {
         fds[n].fd = keypad_event_fd[n];
@@ -313,8 +323,6 @@ nyx_error_t keys_get_event(nyx_device_t *d, nyx_event_t **e)
 
 	static int event_count = 0;
 	static int event_iter = 0;
-
-    int rd = 0;
 
 	keys_device_t *keys_device = (keys_device_t *) d;
 
