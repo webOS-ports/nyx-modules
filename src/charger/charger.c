@@ -188,6 +188,8 @@ nyx_error_t core_charger_read_status(nyx_charger_status_t *status)
 		{
 			strncpy(gChargerStatus.dock_serial_number, variant_buf,
 			        sizeof(gChargerStatus.dock_serial_number) - 1);
+			gChargerStatus.dock_serial_number[
+			    sizeof(gChargerStatus.dock_serial_number) - 1] = '\0';
 		}
 	}
 	else if (ac_online)

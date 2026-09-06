@@ -395,8 +395,10 @@ static char *get_buildinfo(const char *key)
 			*sep = '\0';
 			char k[BUILDINFO_MAX_LINE_LENGTH];
 			char v[BUILDINFO_MAX_LINE_LENGTH];
-			strncpy(k, line, sizeof(k));
-			strncpy(v, sep + 1, sizeof(v));
+			strncpy(k, line, sizeof(k) - 1);
+			k[sizeof(k) - 1] = '\0';
+			strncpy(v, sep + 1, sizeof(v) - 1);
+			v[sizeof(v) - 1] = '\0';
 			trim_whitespaces(k);
 			trim_whitespaces(v);
 			if (strcmp(key, k) == 0) {
