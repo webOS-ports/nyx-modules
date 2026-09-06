@@ -361,11 +361,11 @@ static void trim_whitespaces(char *str)
 	if (len == 0) return;
 
 	int start = 0;
-	while (isspace(str[start]))
+	while (isspace((unsigned char)str[start]))
 		start++;
 
 	int end = len - 1;
-	while (end > start && isspace(str[end]))
+	while (end > start && isspace((unsigned char)str[end]))
 		end--;
 
 	int shiftIndex = 0;
