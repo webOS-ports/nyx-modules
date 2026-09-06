@@ -612,6 +612,7 @@ static void handle_new_event(input_event_t *event)
 		memcpy(&touchpanel_event_list.input[0], event, sizeof(input_event_t));
 		// Forward an EV_SYN after the key event, to make sure it is processed immediately.
 		input_event_t syn_event;
+		syn_event.time = event->time;
 		syn_event.type = EV_SYN;
 		syn_event.code = SYN_START;
 		syn_event.value = 0;
