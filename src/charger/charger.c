@@ -229,7 +229,7 @@ void _battery_read_status()
 	if (curr_battery_state && battery_status)
 	{
 		memset(curr_battery_state, 0, sizeof(nyx_battery_status_t));
-		memset(battery_status, 0, sizeof(battery_status));
+		memset(battery_status, 0, STATUS_LEN);
 		char status[STATUS_LEN];
 
 		curr_battery_state->present = ((nyx_utils_read_value(batt_present_path)) == 1) ?
