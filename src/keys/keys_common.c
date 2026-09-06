@@ -105,7 +105,7 @@ void *notifier_thread_func(void *user_data)
         if (ret_val <= 0)
             continue;
 
-        nyx_debug(MSGID_NYX_MOD_KEYS_NEW_INPUT_DEV, 0, "Got new input event; waking up main thread ..");
+        nyx_debug("Got new input event; waking up main thread ..");
 
         /* wakeup main thread */
         (void) write(keypad_notifier_pipe_fds[1], &event, sizeof(int));
@@ -176,7 +176,7 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
             break;
         }
 
-        nyx_debug(MSGID_NYX_MOD_KEYS_OPEN_ERR, 0, "Initializing input device %s", path);
+        nyx_debug("Initializing input device %s", path);
 
         fd = open(path, O_RDONLY);
         if (fd < 0) {
@@ -233,7 +233,7 @@ nyx_error_t nyx_module_close(nyx_device_t *d)
 		keys_release_event(d, (nyx_event_t *) keys_device->current_event_ptr);
 	}
 
-	nyx_debug(MSGID_NYX_MOD_KEYS_OPEN_ERR, 0, "Freeing keys %p", d);
+	nyx_debug("Freeing keys %p", d);
 	free(d);
 
 	return NYX_ERROR_NONE;
