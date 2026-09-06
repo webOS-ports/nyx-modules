@@ -159,6 +159,7 @@ static int FileGetInt(const char *path, int *ret_data)
     char *endptr;
     gsize len;
     long int val;
+    int ret = 0;
 
     if (!path || !g_file_get_contents(path, &contents, &len, &gerror)) {
         if (gerror) {
@@ -172,6 +173,7 @@ static int FileGetInt(const char *path, int *ret_data)
     if (endptr == contents) {
         nyx_critical(MSGID_NYX_MOD_LED_FILE_CONTENT_ERR, 0, "%s: Invalid input in %s.",
             __FUNCTION__, path);
+        ret = -1;
         goto end;
     }
 
@@ -179,7 +181,7 @@ static int FileGetInt(const char *path, int *ret_data)
         *ret_data = val;
 end:
     g_free(contents);
-    return 0;
+    return ret;
 }
 
 static int FileWriteInt(const char *path, int value)
