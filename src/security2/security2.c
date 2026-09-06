@@ -33,7 +33,9 @@
 /*
  * Callbacks for multithreaded OpenSSL
  */
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
 static pthread_mutex_t *lock_crypto = NULL;
+#endif
 static int is_initializing = 0;
 static int reference_count;
 
@@ -50,6 +52,7 @@ static int sync_interlocked_exchange(int *shared, int exchange)
 	return u;
 }
 
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
 static unsigned long pthreads_thread_id_callback(void)
 {
 	return (unsigned long)pthread_self();
@@ -68,6 +71,7 @@ static void pthreads_crypto_locking_callback(
 		pthread_mutex_unlock(&(lock_crypto[type]));
 	}
 }
+#endif
 
 NYX_DECLARE_MODULE(NYX_DEVICE_SECURITY2, "Security2");
 
@@ -133,6 +137,7 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
 		goto exit;
 	}
 
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
 	lock_crypto = OPENSSL_malloc(CRYPTO_num_locks() * sizeof(pthread_mutex_t));
 
 	if (lock_crypto == NULL)
@@ -149,6 +154,7 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
 	}
 
 	CRYPTO_set_locking_callback(pthreads_crypto_locking_callback);
+#endif
 
 	OPENSSL_init();
 	OpenSSL_add_all_algorithms();
@@ -157,7 +163,9 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
 	OPENSSL_config(NULL);
 #endif
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
 	CRYPTO_set_id_callback(pthreads_thread_id_callback);
+#endif
 
 
 exit:
@@ -186,6 +194,7 @@ nyx_error_t nyx_module_close(nyx_device_handle_t d)
 		goto exit;
 	}
 
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
 	CRYPTO_set_locking_callback(NULL);
 
 	for (int i = 0; i < CRYPTO_num_locks(); i++)
@@ -195,6 +204,7 @@ nyx_error_t nyx_module_close(nyx_device_handle_t d)
 
 	OPENSSL_free(lock_crypto);
 	lock_crypto = NULL;
+#endif
 
 	EVP_cleanup();
 	CRYPTO_cleanup_all_ex_data();
