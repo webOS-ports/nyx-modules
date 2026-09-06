@@ -129,13 +129,21 @@ static void keystore_load_aeskey(GKeyFile *keyfile, gchar *key,
 		int keylen = atoi(list[0]);
 		gsize keybits_len = 0;
 		guchar *keybits = g_base64_decode(list[1], &keybits_len);
-		g_assert(keylen == keybits_len * 8);
 
-		struct aes_key_t *aes_key = g_malloc(sizeof(struct aes_key_t));
-		aes_key->keylen = keylen;
-		memcpy(aes_key->key, keybits, keybits_len);
+		if (keybits == NULL || keybits_len == 0 ||
+		        keybits_len > EVP_MAX_KEY_LENGTH ||
+		        keylen < 0 || (gsize) keylen != keybits_len * 8)
+		{
+			g_warning("keystore: ignoring invalid aes key entry '%s'", key);
+		}
+		else
+		{
+			struct aes_key_t *aes_key = g_malloc(sizeof(struct aes_key_t));
+			aes_key->keylen = keylen;
+			memcpy(aes_key->key, keybits, keybits_len);
 
-		keystore_key_replace(keystore->aes, aes_key, &key_index);
+			keystore_key_replace(keystore->aes, aes_key, &key_index);
+		}
 
 		g_free(keybits);
 	}
@@ -191,6 +199,14 @@ static void keystore_load_rsakey(GKeyFile *keyfile, gchar *key,
 		guchar *keybits = g_base64_decode(list[1], &keybits_len);
 		const guchar *tmp = keybits;
 
+		if (keybits == NULL || keybits_len == 0)
+		{
+			g_warning("keystore: ignoring invalid rsa key entry '%s'", key);
+			g_free(keybits);
+			g_strfreev(list);
+			return;
+		}
+
 		struct rsa_key_t *rsa_key = g_malloc(sizeof(struct rsa_key_t));
 		rsa_key->keylen = keylen;
 		rsa_key->rsa = d2i_RSAPrivateKey(NULL, (const unsigned char **)&tmp,
@@ -199,6 +215,11 @@ static void keystore_load_rsakey(GKeyFile *keyfile, gchar *key,
 		if (NULL != rsa_key->rsa)
 		{
 			keystore_key_replace(keystore->rsa, rsa_key, &key_index);
+		}
+		else
+		{
+			g_warning("keystore: ignoring unparseable rsa key entry '%s'", key);
+			g_free(rsa_key);
 		}
 
 		g_free(keybits);
