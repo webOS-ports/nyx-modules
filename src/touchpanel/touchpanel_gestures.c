@@ -182,6 +182,12 @@ void init_gesture_state_machine(const general_settings_t *pGeneralSettings,
 	for (i = 0 ; i < maxFingers * 2; i++)
 	{
 		finger_t *finger = malloc(sizeof(finger_t));
+
+		if (finger == NULL)
+		{
+			break;
+		}
+
 		create_coord_buffer(&finger->coords, pGeneralSettings->coordBufSize);
 		finger->state.state = UNUSED;
 		g_queue_push_tail(&availableFingers, finger);

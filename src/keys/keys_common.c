@@ -333,6 +333,11 @@ nyx_error_t keys_get_event(nyx_device_t *d, nyx_event_t **e)
 		 * let's allocate new event and hold it here.
 		 */
 		keys_device->current_event_ptr = keys_event_create();
+
+		if (keys_device->current_event_ptr == NULL)
+		{
+			return NYX_ERROR_OUT_OF_MEMORY;
+		}
 	}
 
 	for (; event_iter < event_count;)
