@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <stdio.h>
+#include <math.h>
 #include <unistd.h>
 #include <linux/input.h>
 #include <fcntl.h>
@@ -57,7 +58,7 @@ nyx_error_t als_release_event(nyx_device_t *device, nyx_event_t *event)
 	return NYX_ERROR_NONE;
 }
 
-static nyx_event_keys_t *als_event_create()
+static nyx_event_sensor_als_t *als_event_create(void)
 {
 	nyx_event_sensor_als_t* event = (nyx_event_sensor_als_t*)
 		calloc(sizeof(nyx_event_sensor_als_t), 1);
@@ -105,14 +106,14 @@ nyx_error_t nyx_module_close(nyx_device_t* device)
 {
 	als_device_t *als_device = (als_device_t*) device;
 
-	if (als_device->fd > 0)
-		close(als_device->fd);
-
 	if (device == NULL)
 		return NYX_ERROR_INVALID_HANDLE;
 
+	if (als_device->fd > 0)
+		close(als_device->fd);
+
 	if (als_device->current_event_ptr)
-		als_release_event(als_device, (nyx_event_t*) als_device->current_event_ptr);
+		als_release_event((nyx_device_t*) als_device, (nyx_event_t*) als_device->current_event_ptr);
 
 	free(als_device);
 
@@ -139,8 +140,6 @@ gboolean file_set_contents(const char *filename, const char *content, unsigned i
 
 nyx_error_t als_set_operating_mode(nyx_device_t *device, nyx_operating_mode_t mode)
 {
-	GError *error = NULL;
-
 	switch (mode) {
 		case NYX_OPERATING_MODE_OFF:
 			if (file_set_contents(ALS_INPUT_DEVICE"device/enable", "0", 2) == FALSE) {
@@ -211,9 +210,10 @@ static int read_input_event(int fd, struct input_event *events, int max_events)
 
 nyx_error_t als_get_event(nyx_device_t* device, nyx_event_t** event)
 {
-	int rd = 0;
 	als_device_t *als_device = (als_device_t*) device;
 
+	if (device == NULL || event == NULL)
+		return NYX_ERROR_INVALID_HANDLE;
 
 	/* event bookkeeping... */
 	if(!als_device->event_iter) {
@@ -225,6 +225,9 @@ nyx_error_t als_get_event(nyx_device_t* device, nyx_event_t** event)
 	if (als_device->current_event_ptr == NULL) {
 		/* let's allocate new event and hold it here */
 		als_device->current_event_ptr = als_event_create();
+
+		if (als_device->current_event_ptr == NULL)
+			return NYX_ERROR_OUT_OF_MEMORY;
 	}
 
 	for (; als_device->event_iter < als_device->event_count;) {
