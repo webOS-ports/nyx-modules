@@ -108,7 +108,7 @@ int battery_percent(void)
 				return -1;
 			}
 
-			if ((full = nyx_utils_read_value(batt_energy_full_path)) < 0)
+			if ((full = nyx_utils_read_value(batt_energy_full_path)) <= 0)
 			{
 				return -1;
 			}
@@ -118,7 +118,7 @@ int battery_percent(void)
 		/* as last try we can use charge_now path */
 		else if (g_file_test(batt_charge_now_path, G_FILE_TEST_EXISTS))
 		{
-			if ((full = nyx_utils_read_value(batt_charge_full_path)) < 0)
+			if ((full = nyx_utils_read_value(batt_charge_full_path)) <= 0)
 			{
 				return -1;
 			}
