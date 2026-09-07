@@ -24,6 +24,15 @@
 #include <nyx/common/nyx_error.h>
 #include <nyx/common/nyx_battery_common.h>
 
+/*
+ * A device can carry more than one battery - a PinePhone (Pro) docked in its
+ * keyboard has the phone's own and the keyboard's - so every reading is taken
+ * for a given battery, identified by its index. Index 0 is the primary
+ * battery: the one the charging logic and the low-battery shutdown follow, and
+ * the one the single-battery part of the nyx API reports.
+ */
+#define BATTERY_PRIMARY 0
+
 // These functions are implemented in device/battery.c or emulator/fake_battery.c
 
 // called by batterylib.c
@@ -31,17 +40,22 @@ nyx_error_t battery_init(void);
 nyx_error_t battery_deinit(void);
 nyx_battery_ctia_t *get_battery_ctia_params(void);
 
+// how many batteries were found, and who they are
+int battery_count(void);
+const char *battery_name(int index);
+const char *battery_role(int index);
+
 // called by battery_read_status() in batterylib.c
-int battery_percent(void);
-int battery_temperature(void);
-int battery_voltage(void);
-int battery_current(void);
-int battery_avg_current(void);
-double battery_full40(void);
-double battery_rawcoulomb(void);
-double battery_coulomb(void);
-double battery_age(void);
-bool battery_is_present(void);
+int battery_percent(int index);
+int battery_temperature(int index);
+int battery_voltage(int index);
+int battery_current(int index);
+int battery_avg_current(int index);
+double battery_full40(int index);
+double battery_rawcoulomb(int index);
+double battery_coulomb(int index);
+double battery_age(int index);
+bool battery_is_present(int index);
 
 // not currently supported by device/battery.c or emulator/fake_battery.c (stub implementations)
 bool battery_authenticate(void);

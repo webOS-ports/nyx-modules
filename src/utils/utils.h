@@ -25,4 +25,11 @@ int FileGetString(const char *path, char *ret_string, size_t maxlen);
 int FileGetDouble(const char *path, double *ret_data);
 char *find_power_supply_sysfs_path(const char *device_type);
 
+/**
+ * Every power_supply of the given type, sorted by node name so the answer does
+ * not depend on the order the filesystem hands entries back. Returns a
+ * NULL-terminated vector, or NULL when there are none; free with g_strfreev().
+ */
+char **find_power_supply_sysfs_paths(const char *device_type);
+
 #endif // UTILS_H_

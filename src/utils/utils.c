@@ -31,6 +31,11 @@
 #include <nyx/module/nyx_log.h>
 #include "msgid.h"
 
+/* Overridable so a host-side test can point at a fixture instead. */
+#ifndef POWER_SUPPLY_SYSFS_DIR
+#define POWER_SUPPLY_SYSFS_DIR "/sys/class/power_supply/"
+#endif
+
 /**
  * Returns string in pre-allocated buffer.
  */
@@ -108,7 +113,7 @@ char *find_power_supply_sysfs_path(const char *device_type)
 	const char *sub_dir_name;
 	const char *file_name;
 	char file_contents[64];
-	char base_dir[64] = "/sys/class/power_supply/";
+	char base_dir[64] = POWER_SUPPLY_SYSFS_DIR;
 
 	dir = g_dir_open(base_dir, 0, &gerror);
 
@@ -199,4 +204,91 @@ char *find_power_supply_sysfs_path(const char *device_type)
 
 	g_dir_close(dir);
 	return fallback;
+}
+
+static gint compare_path_names(gconstpointer a, gconstpointer b)
+{
+	return g_strcmp0(*(const char *const *) a, *(const char *const *) b);
+}
+
+/**
+ * Collect every power_supply of a given type rather than the first one found.
+ *
+ * find_power_supply_sysfs_path() returns whichever entry g_dir_read_name()
+ * happens to yield first, which is filesystem order and so is neither stable
+ * across boots nor meaningful. That is tolerable while a device has exactly
+ * one supply of each type and wrong as soon as it does not: a PinePhone (Pro)
+ * in its keyboard has two of type "Battery", the phone's own and the
+ * keyboard's, and picking between them by directory order picks at random.
+ *
+ * The result is sorted by node name so callers get the same list in the same
+ * order every time. NULL when nothing matches; free with g_strfreev().
+ */
+char **find_power_supply_sysfs_paths(const char *device_type)
+{
+	GError *gerror = NULL;
+	GDir *dir;
+	const char *sub_dir_name;
+	char file_contents[64];
+	const char *base_dir = POWER_SUPPLY_SYSFS_DIR;
+	GPtrArray *found;
+
+	dir = g_dir_open(base_dir, 0, &gerror);
+
+	if (gerror)
+	{
+		nyx_error(MSGID_NYX_MOD_SYSFS_ERR, 0, "error: %s", gerror->message);
+		g_error_free(gerror);
+		return NULL;
+	}
+
+	found = g_ptr_array_new();
+
+	while ((sub_dir_name = g_dir_read_name(dir)) != NULL)
+	{
+		gchar *dir_path;
+		gchar *type_path;
+
+		// ignore hidden files
+		if ('.' == sub_dir_name[0])
+		{
+			continue;
+		}
+
+		dir_path = g_build_filename(base_dir, sub_dir_name, NULL);
+
+		if (!g_file_test(dir_path, G_FILE_TEST_IS_DIR))
+		{
+			g_free(dir_path);
+			continue;
+		}
+
+		type_path = g_build_filename(dir_path, "type", NULL);
+		file_contents[0] = '\0';
+
+		if (0 == FileGetString(type_path, file_contents, sizeof(file_contents)) &&
+		        0 == strcmp(file_contents, device_type))
+		{
+			g_ptr_array_add(found, dir_path);
+		}
+		else
+		{
+			g_free(dir_path);
+		}
+
+		g_free(type_path);
+	}
+
+	g_dir_close(dir);
+
+	if (0 == found->len)
+	{
+		g_ptr_array_free(found, TRUE);
+		return NULL;
+	}
+
+	g_ptr_array_sort(found, compare_path_names);
+	g_ptr_array_add(found, NULL);
+
+	return (char **) g_ptr_array_free(found, FALSE);
 }

@@ -95,6 +95,14 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
 	                           NYX_BATTERY_GET_FAKE_MODE_MODULE_METHOD,
 	                           "battery_get_fake_mode");
 
+	nyx_module_register_method(i, (nyx_device_t *)nyxDev,
+	                           NYX_BATTERY_QUERY_BATTERY_COUNT_MODULE_METHOD,
+	                           "battery_query_battery_count");
+
+	nyx_module_register_method(i, (nyx_device_t *)nyxDev,
+	                           NYX_BATTERY_QUERY_BATTERY_INFO_MODULE_METHOD,
+	                           "battery_query_battery_info");
+
 	nyx_error_t result = battery_init();
 
 	if (NYX_ERROR_NONE != result)
@@ -126,25 +134,25 @@ nyx_error_t nyx_module_close(nyx_device_t *d)
 	return result;
 }
 
-void battery_read_status(nyx_battery_status_t *state)
+void battery_read_status_at(int index, nyx_battery_status_t *state)
 {
 	if (state)
 	{
 		memset(state, 0, sizeof(nyx_battery_status_t));
 
-		state->present = battery_is_present();
+		state->present = battery_is_present(index);
 
 		if (state->present)
 		{
-			state->percentage = battery_percent();
-			state->temperature = battery_temperature();
-			state->voltage = battery_voltage();
-			state->current = battery_current();
-			state->avg_current = battery_avg_current();
-			state->capacity = battery_coulomb();
-			state->capacity_raw = battery_rawcoulomb();
-			state->capacity_full40 = battery_full40();
-			state->age = battery_age();
+			state->percentage = battery_percent(index);
+			state->temperature = battery_temperature(index);
+			state->voltage = battery_voltage(index);
+			state->current = battery_current(index);
+			state->avg_current = battery_avg_current(index);
+			state->capacity = battery_coulomb(index);
+			state->capacity_raw = battery_rawcoulomb(index);
+			state->capacity_full40 = battery_full40(index);
+			state->age = battery_age(index);
 
 			if (state->avg_current >  0)
 			{
@@ -156,6 +164,11 @@ void battery_read_status(nyx_battery_status_t *state)
 			state->charging = false;
 		}
 	}
+}
+
+void battery_read_status(nyx_battery_status_t *state)
+{
+	battery_read_status_at(BATTERY_PRIMARY, state);
 }
 
 nyx_error_t battery_query_battery_status(nyx_device_handle_t handle,
@@ -172,6 +185,67 @@ nyx_error_t battery_query_battery_status(nyx_device_handle_t handle,
 	}
 
 	battery_read_status(status);
+
+	return NYX_ERROR_NONE;
+}
+
+/**
+ * @brief How many batteries this device has.
+ *
+ * Present or not: a detachable battery keeps its place in the list while it is
+ * detached, reporting present = false, so that its absence is something the
+ * caller is told about rather than something it has to infer from the list
+ * getting shorter.
+ */
+nyx_error_t battery_query_battery_count(nyx_device_handle_t handle,
+                                        int32_t *count)
+{
+	if (handle != nyxDev)
+	{
+		return NYX_ERROR_INVALID_HANDLE;
+	}
+
+	if (!count)
+	{
+		return NYX_ERROR_INVALID_VALUE;
+	}
+
+	*count = battery_count();
+
+	return NYX_ERROR_NONE;
+}
+
+/**
+ * @brief Identity and readings for one battery.
+ *
+ * Index 0 is the primary battery and reports exactly what
+ * battery_query_battery_status() reports.
+ */
+nyx_error_t battery_query_battery_info(nyx_device_handle_t handle,
+                                       int32_t index, nyx_battery_info_t *info)
+{
+	if (handle != nyxDev)
+	{
+		return NYX_ERROR_INVALID_HANDLE;
+	}
+
+	if (!info)
+	{
+		return NYX_ERROR_INVALID_VALUE;
+	}
+
+	if (index < 0 || index >= battery_count())
+	{
+		return NYX_ERROR_VALUE_OUT_OF_RANGE;
+	}
+
+	memset(info, 0, sizeof(nyx_battery_info_t));
+
+	g_strlcpy(info->name, battery_name(index), sizeof(info->name));
+	g_strlcpy(info->role, battery_role(index), sizeof(info->role));
+	info->primary = (BATTERY_PRIMARY == index);
+
+	battery_read_status_at(index, &info->status);
 
 	return NYX_ERROR_NONE;
 }
