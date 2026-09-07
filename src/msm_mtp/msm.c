@@ -115,6 +115,17 @@ nyx_error_t mtp_set_mode(nyx_device_handle_t handle,
 	if ((action == NYX_MASS_STORAGE_MODE_DISABLE) ||
 	    (action == NYX_MASS_STORAGE_MODE_DISABLE_AFTER_FSCK))
 	{
+		/* Bringing MTP up rebinds the gadget, which emits a transient USB
+		 * DISCONNECT that the udev rules report to storaged as a cable
+		 * unplug -> DISABLE. luneos-mtp-gadget sets this marker across the
+		 * rebind so we do not tear down the MTP we are in the middle of
+		 * setting up. A real unplug happens with the marker absent. */
+		if (access("/run/luneos-mtp/reconfiguring", F_OK) != 0) {
+			/* stopping umtprd runs its ExecStopPost gadget cleanup, which
+			 * removes the mtp function and restores the previous gadget */
+			if (system("pidof umtprd > /dev/null") == 0)
+				system("systemctl stop umtprd --no-block");
+		}
 		*ret = NYX_MASS_STORAGE_MODE_SUCCESS;
 		return NYX_ERROR_NONE;
 	}
@@ -255,7 +266,13 @@ nyx_error_t mtp_get_state(nyx_device_handle_t handle,
 
 	if (g_file_test(ANDROID_USB_SYSFS_PATH, G_FILE_TEST_IS_DIR))
 		get_state_android_usb(state);
-	else
+
+	/* Fall back to the configfs/UDC path when android_usb is absent or
+	 * inert. Halium devices (e.g. sargo) keep a vestigial android_usb node
+	 * whose functions are empty while the real gadget lives in configfs, so
+	 * a mere directory check is not enough - only trust android_usb when it
+	 * actually reported the driver as available. */
+	if (!(*state & NYX_MASS_STORAGE_MODE_DRIVER_AVAILABLE))
 		get_state_udc(state);
 
 	if (system("pidof umtprd > /dev/null") == 0)
