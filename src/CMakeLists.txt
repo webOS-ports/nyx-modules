@@ -39,7 +39,8 @@ if(NYXMOD_OW_BATTERY OR NYXMOD_OW_CHARGER OR NYXMOD_OW_MSMMTP OR NYXMOD_OW_LED O
 endif()
 
 webos_add_linker_options(ALL --no-undefined --as-needed)
-webos_add_compiler_flags(ALL -Wall -g -std=c99)
+webos_add_compiler_flags(ALL -Wall -g)
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=c99")
 webos_add_compiler_flags(ALL -D_GNU_SOURCE=1)
 webos_add_compiler_flags(DEBUG -O0 -DDEBUG -D_DEBUG)
 webos_add_compiler_flags(RELEASE -DNDEBUG)

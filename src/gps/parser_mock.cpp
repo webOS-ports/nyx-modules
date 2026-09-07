@@ -37,10 +37,10 @@ const std::string nmea_complete_path = nmea_file_path + "/" + nmea_file_name;
 ParserMock::ParserMock()
     : mNmeaFp(nullptr)
     , mSeekOffset(0)
-    , mStopParser(false)
-    , mParserInotifyObj(nullptr)
     , mParserThreadPoolObj(nullptr)
+    , mStopParser(false)
     , mParserRequested(false)
+    , mParserInotifyObj(nullptr)
 {
 
     mParserInotifyObj = new ParserInotify(nmea_file_path, this);

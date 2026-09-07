@@ -29,9 +29,9 @@
 GPSDevice::GPSDevice()
     : mFd(INVALID_FD)
     , mGpsDevAvail(false)
+    , mKeyfile(nullptr)
     , mReadChannel(nullptr)
     , mIoWatchId(0)
-    , mKeyfile(nullptr)
 {
 }
 

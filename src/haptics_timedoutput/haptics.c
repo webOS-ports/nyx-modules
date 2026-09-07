@@ -54,8 +54,8 @@ typedef struct {
 	 * nyx_haptics_get_effect_id()/dampening factor accessors, so the
 	 * parent must be the full haptics device struct, not nyx_device_t. */
 	nyx_haptics_device_t _parent;
-	const char *path;             /* path for duration */
-	const char *path_activation;  /* path for activating the vibrator */
+	gchar *path;                  /* path for duration */
+	gchar *path_activation;       /* path for activating the vibrator */
 	int fd_ioctl;
 	struct ff_effect ff;
 	guint fulltimeoutwatch;
@@ -70,15 +70,14 @@ typedef struct {
 static void clean_timeouts(haptics_device_t *device);
 
 
-static const char* find_haptics_device_timed_output(void)
+static gchar* find_haptics_device_timed_output(void)
 {
 	struct udev *udev;
 	struct udev_enumerate *enumerator;
 	struct udev_list_entry *devices;
-	const char *path = NULL;
+	gchar *path = NULL;
 	struct udev_device *device;
 	struct udev_list_entry *l;
-	const char *device_type = NULL;
 
 	udev = udev_new();
 	if (!udev) {
@@ -97,7 +96,7 @@ static const char* find_haptics_device_timed_output(void)
 			if (device == NULL)
 				continue;
 
-			nyx_debug(MSGID_NYX_MOD_HAPTICS_ODEVICE_FOUND, 0, "Found possible vibrator device: %s", udev_list_entry_get_name(l));
+			nyx_debug("Found possible vibrator device: %s", udev_list_entry_get_name(l));
 			path = g_strdup(udev_device_get_syspath(device));
 			udev_device_unref(device);
 			break;
@@ -113,10 +112,10 @@ static const char* find_haptics_device_timed_output(void)
 	return path;
 }
 
-static const char* find_haptics_device_leds(void)
+static gchar* find_haptics_device_leds(void)
 {
 	struct udev *udev;
-	const char *path = NULL;
+	gchar *path = NULL;
 	struct udev_device *device;
 
 	udev = udev_new();
@@ -130,7 +129,7 @@ static const char* find_haptics_device_leds(void)
 		nyx_error(MSGID_NYX_MOD_HAPTICS_NODEVICE_ERR, 0, "Did not find any devices matching the vibrator subsystem");
 	}
 	else {
-		nyx_debug(MSGID_NYX_MOD_HAPTICS_ODEVICE_FOUND, 0, "Found possible vibrator device: %s", "/sys/class/leds/vibrator");
+		nyx_debug("Found possible vibrator device: %s", "/sys/class/leds/vibrator");
 		path = g_strdup(udev_device_get_syspath(device));
 		udev_device_unref(device);
 	}
@@ -141,8 +140,7 @@ static const char* find_haptics_device_leds(void)
 
 nyx_error_t nyx_module_open(nyx_instance_t instance, nyx_device_t** device)
 {
-	const char *vibrator_path = NULL;
-	const char *path_activation = NULL;
+	gchar *vibrator_path = NULL;
 	haptics_device_t *haptics_device;
 
 	haptics_device = g_new0(haptics_device_t, 1);
@@ -277,7 +275,9 @@ static void clean_timeouts(haptics_device_t *device)
 		ff_event.type = EV_FF;
 		ff_event.code = device->ff.id;
 		ff_event.value = 0;
-		write(device->fd_ioctl, &ff_event, sizeof ff_event);
+
+		if (write(device->fd_ioctl, &ff_event, sizeof ff_event) < 0)
+			nyx_debug("Failed to write EV_FF stop event: %s", strerror(errno));
 
 		/* clear rumble effect */
 		ioctl(device->fd_ioctl, EVIOCRMFF, device->ff.id);
@@ -298,22 +298,6 @@ static gboolean vibrate_timeout_cb(gpointer data)
 	return FALSE;
 }
 
-static gboolean vibrate(haptics_device_t *device, int milliseconds)
-{
-	if (device->pulses > 0 || device->fulltimeoutwatch > 0)
-		return FALSE;
-
-	if (milliseconds < 50)
-		return FALSE;
-
-	clean_timeouts(device);
-	enable_vibrator(device, milliseconds);
-
-	g_timeout_add(milliseconds, vibrate_timeout_cb, device);
-
-	return TRUE;
-}
-
 static gboolean vibrate_oneshot(haptics_device_t *device, int milliseconds)
 {
 	if (milliseconds < 50)
@@ -332,7 +316,7 @@ static gboolean toggle_timeout(gpointer data)
 {
 	haptics_device_t *device = data;
 
-	nyx_debug(MSGID_NYX_MOD_HAPTICS_TOGGLE_TIMEOUT, 0, "on = %d, pulses = %d", (guint) device->on, (guint) device->pulses);
+	nyx_debug("on = %d, pulses = %d", (guint) device->on, (guint) device->pulses);
 
 	if (device->on == FALSE) {
 		enable_vibrator(device, device->don);
@@ -351,7 +335,7 @@ static gboolean toggle_timeout(gpointer data)
 
 static gboolean vibrate_pattern(haptics_device_t *device, int pulses, int delay_on, int delay_off)
 {
-	nyx_debug(MSGID_NYX_MOD_HAPTICS_VIBRATE_PATTERN, 0, "%s pulses=%i delay_on=%i delay_off=%i", __PRETTY_FUNCTION__, pulses, delay_on, delay_off);
+	nyx_debug("%s pulses=%i delay_on=%i delay_off=%i", __PRETTY_FUNCTION__, pulses, delay_on, delay_off);
 
 	if (device->pulses > 0 || device->fulltimeoutwatch > 0)
 		return FALSE;
@@ -376,7 +360,7 @@ nyx_error_t haptics_vibrate(nyx_device_t *device, nyx_haptics_configuration_t co
 	guint delay_off = 0;
 	gint one_shot = 0;
 
-	nyx_debug(MSGID_NYX_MOD_HAPTICS_VIBRATE, 0, "%s", __PRETTY_FUNCTION__);
+	nyx_debug("%s", __PRETTY_FUNCTION__);
 
 	switch (configuration.type) {
 	case NYX_HAPTICS_EFFECT_UNDEFINED:
@@ -413,10 +397,12 @@ nyx_error_t haptics_vibrate(nyx_device_t *device, nyx_haptics_configuration_t co
 		delay_on = HAPTICS_EFFECT_RINGTONE_ON;
 		delay_off = HAPTICS_EFFECT_RINGTONE_OFF;
 		break;
+	default:
+		break;
 	}
 
 	if (one_shot <= 0 && pulses < 1) {
-		nyx_debug(MSGID_NYX_MOD_HAPTICS_NOPULSES_ERR, 0, "No pulses!");
+		nyx_debug("No pulses!");
 		return NYX_ERROR_INVALID_VALUE;
 	}
 
@@ -439,7 +425,9 @@ nyx_error_t haptics_vibrate(nyx_device_t *device, nyx_haptics_configuration_t co
 		ff_event.type = EV_FF;
 		ff_event.code = haptics_device->ff.id;
 		ff_event.value = 1;
-		write(haptics_device->fd_ioctl, &ff_event, sizeof ff_event);
+
+		if (write(haptics_device->fd_ioctl, &ff_event, sizeof ff_event) < 0)
+			nyx_debug("Failed to write EV_FF play event: %s", strerror(errno));
 
 		/* timeout to stop vibration - tracked so cancel/close can
 		 * remove it; an untracked watch would fire after the device

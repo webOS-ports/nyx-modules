@@ -49,7 +49,7 @@
  * @{
  */
 
-int32_t rtc_fd = -1;
+static int32_t rtc_fd = -1;
 
 #define STD_ASCTIME_BUF_SIZE    26
 
@@ -112,7 +112,7 @@ tm_to_rtc_wkalrm(struct tm *tm_time, struct rtc_wkalrm *alarm)
  *
  */
 bool
-rtc_open()
+rtc_open(void)
 {
 #if DEV_RTC_IMPLEMENTED
 
@@ -210,7 +210,7 @@ rtc_clear_watch(void)
 * @brief Close rtc device.
 */
 void
-rtc_close()
+rtc_close(void)
 {
 	if (rtc_fd >= 0)
 	{
@@ -223,7 +223,7 @@ rtc_close()
 * @brief Obtain an fd for use in poll() or select().
 */
 int32_t
-rtc_getfd()
+rtc_getfd(void)
 {
 	return rtc_fd;
 }
@@ -484,7 +484,7 @@ error:
 * @retval
 */
 bool
-rtc_check_alarm()
+rtc_check_alarm(void)
 {
 #if DEV_RTC_IMPLEMENTED
 	unsigned long data;

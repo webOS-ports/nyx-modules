@@ -184,6 +184,12 @@ void init_gesture_state_machine(const general_settings_t *pGeneralSettings,
 	for (i = 0 ; i < maxFingers * 2; i++)
 	{
 		finger_t *finger = malloc(sizeof(finger_t));
+
+		if (finger == NULL)
+		{
+			break;
+		}
+
 		create_coord_buffer(&finger->coords, pGeneralSettings->coordBufSize);
 		finger->state.state = UNUSED;
 		g_queue_push_tail(&availableFingers, finger);
@@ -248,7 +254,7 @@ finger_t *add_new_finger(int x,int y,int weight, const time_stamp_t *pCurTime)
     finger->lastWeight = weight;
     reset_coord_buffer(&finger->coords);
     update_coord_buffer(&finger->coords, x, y, pCurTime);
-    nyx_debug(MSGID_NYX_MOD_TP_FINGER_DOWN, 0, "Finger down at %d,%d\n",x,y);
+    nyx_debug("Finger down at %d,%d\n",x,y);
     sFingers = g_list_prepend(sFingers,finger);
 
     return finger;
@@ -265,7 +271,7 @@ update_finger(finger_t *finger, int x,int y,int weight, const time_stamp_t *pCur
     if(finger->lastWeight/2 < weight) {
         update_coord_buffer(&finger->coords, x, y, pCurTime);
     } else {
-        nyx_debug(MSGID_NYX_MOD_TP_IGNORING_COORD, 0, "Ignoring coordinate\n");
+        nyx_debug("Ignoring coordinate\n");
     }   
     finger->lastWeight = weight;
 }
@@ -352,7 +358,7 @@ gesture_state_machine(int *pXCoords, int *pYCoords, const int *pFingerWeights,
 			continue;
 		}
 
-		nyx_debug(MSGID_NYX_MOD_TP_FINGER_WT, 0,"New coord (at: %d), %d,%d weight: %d, distance: %d",
+		nyx_debug("New coord (at: %d), %d,%d weight: %d, distance: %d",
 		         finger->minDistId, pXCoords[finger->minDistId], pYCoords[finger->minDistId],
 		         pFingerWeights[finger->minDistId], finger->minDist);
 
@@ -365,7 +371,7 @@ gesture_state_machine(int *pXCoords, int *pYCoords, const int *pFingerWeights,
 		}
 		else
 		{
-			nyx_debug(MSGID_NYX_MOD_TP_IGNORING_COORD, 0, "Ignoring coordinate");
+			nyx_debug("Ignoring coordinate");
 		}
 
 		finger->lastWeight = pFingerWeights[finger->minDistId];
@@ -398,9 +404,9 @@ gesture_state_machine(int *pXCoords, int *pYCoords, const int *pFingerWeights,
 			continue;
 		}
 
-		nyx_debug(MSGID_NYX_MOD_TP_FINGER_WT, 0, "pFingerWeight: %d (%d)", pFingerWeights[j], j);
+		nyx_debug("pFingerWeight: %d (%d)", pFingerWeights[j], j);
 
-		nyx_debug(MSGID_NYX_MOD_TP_NEW_FINGER, 0, "j: %d, %d) New finger @ %d,%d", j, numFingers, pXCoords[j],
+		nyx_debug("j: %d, %d) New finger @ %d,%d", j, numFingers, pXCoords[j],
 		         pYCoords[j]);
 
 		ts.time.tv_nsec += timestmpcnt;

@@ -361,11 +361,11 @@ static void trim_whitespaces(char *str)
 	if (len == 0) return;
 
 	int start = 0;
-	while (isspace(str[start]))
+	while (isspace((unsigned char)str[start]))
 		start++;
 
 	int end = len - 1;
-	while (end > start && isspace(str[end]))
+	while (end > start && isspace((unsigned char)str[end]))
 		end--;
 
 	int shiftIndex = 0;
@@ -395,8 +395,10 @@ static char *get_buildinfo(const char *key)
 			*sep = '\0';
 			char k[BUILDINFO_MAX_LINE_LENGTH];
 			char v[BUILDINFO_MAX_LINE_LENGTH];
-			strncpy(k, line, sizeof(k));
-			strncpy(v, sep + 1, sizeof(v));
+			strncpy(k, line, sizeof(k) - 1);
+			k[sizeof(k) - 1] = '\0';
+			strncpy(v, sep + 1, sizeof(v) - 1);
+			v[sizeof(v) - 1] = '\0';
 			trim_whitespaces(k);
 			trim_whitespaces(v);
 			if (strcmp(key, k) == 0) {

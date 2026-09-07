@@ -165,14 +165,28 @@ void gps_nmea_cb(GpsUtcTime timestamp, const char* nmea, int length)
     if (nyx_gps_cbs == NULL || nyx_gps_cbs->nmea_cb == NULL)
         return;
 
-    if (nmea_length < length)
-        nmea_sentence = (char *)realloc(nmea_sentence, length + 1);
+    if (nmea == NULL || length < 0)
+        return;
 
-    if (nmea_sentence && nmea) {
-        memset(nmea_sentence, 0, length + 1);
-        memcpy(nmea_sentence, nmea, length);
-        nmea_length = length;
+    if (nmea_length < length) {
+        char *new_sentence = (char *)realloc(nmea_sentence, length + 1);
+
+        if (new_sentence == NULL) {
+            free(nmea_sentence);
+            nmea_sentence = NULL;
+            nmea_length = 0;
+            return;
+        }
+
+        nmea_sentence = new_sentence;
     }
+
+    if (nmea_sentence == NULL)
+        return;
+
+    memset(nmea_sentence, 0, length + 1);
+    memcpy(nmea_sentence, nmea, length);
+    nmea_length = length;
 
     (* (nyx_gps_cbs->nmea_cb))((int64_t)timestamp, nmea_sentence, nmea_length, nyx_gps_cbs->user_data);
 }

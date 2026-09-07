@@ -218,14 +218,7 @@ nyx_error_t system_suspend(nyx_device_handle_t handle, bool *success)
 
 	if (success)
 	{
-		if (ret < 0)
-		{
-			*success = false;
-		}
-		else
-		{
-			*success = true;
-		}
+		*success = (ret == 0);
 	}
 
 	return NYX_ERROR_NONE;
@@ -255,7 +248,7 @@ nyx_error_t system_shutdown(nyx_device_handle_t handle ,
 			break;
 	}
 
-	if (ret < 0)
+	if (ret != 0)
 	{
 		return NYX_ERROR_GENERIC;
 	}
@@ -287,7 +280,7 @@ nyx_error_t system_reboot(nyx_device_handle_t handle ,
 			break;
 	}
 
-	if (ret < 0)
+	if (ret != 0)
 	{
 		return NYX_ERROR_GENERIC;
 	}

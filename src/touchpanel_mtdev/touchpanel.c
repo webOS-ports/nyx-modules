@@ -156,6 +156,11 @@ static nyx_touchpanel_event_item_t *touch_event_get_next_item(
 	nyx_touchpanel_event_item_t *item_ptr = NULL;
 	assert(NULL != i_event_ptr);
 
+	if (NULL == i_event_ptr)
+	{
+		return NULL;
+	}
+
 	if (i_event_ptr->item_count < NYX_MAX_TOUCH_EVENTS)
 	{
 		item_ptr = &i_event_ptr->item_array[i_event_ptr->item_count++];
@@ -174,6 +179,11 @@ static nyx_touchpanel_event_item_t *touch_event_get_current_item(
 {
 	nyx_touchpanel_event_item_t *item_ptr = NULL;
 	assert(NULL != i_event_ptr);
+
+	if (NULL == i_event_ptr)
+	{
+		return NULL;
+	}
 
 	if (i_event_ptr->item_count > 0)
 	{
@@ -455,7 +465,15 @@ init_touchpanel(void)
     {
         nyx_debug("[touchpanel] mtdev initialized.");
         int iSlot = 0;
-        mt_slots = (mt_slot_t *)calloc(sizeof(mt_slot_t), MAX_MT_SLOTS);
+        mt_slots = (mt_slot_t *)calloc(MAX_MT_SLOTS, sizeof(mt_slot_t));
+
+        if (mt_slots == NULL)
+        {
+            mtdev_close_delete(ts_mtdev);
+            ts_mtdev = NULL;
+            goto error;
+        }
+
         for (; iSlot < MAX_MT_SLOTS; iSlot++)
         {
             mt_slots[iSlot].tracking_id = -1;
@@ -745,6 +763,7 @@ static void handle_new_event(input_event_t *event)
 		memcpy(&touchpanel_event_list.input[0], event, sizeof(input_event_t));
 		// Forward an EV_SYN after the key event, to make sure it is processed immediately.
 		input_event_t syn_event;
+		syn_event.time = event->time;
 		syn_event.type = EV_SYN;
 		syn_event.code = SYN_START;
 		syn_event.value = 0;
@@ -848,6 +867,11 @@ nyx_error_t touchpanel_get_event(nyx_device_t *d, nyx_event_t **e)
 		* let's allocate new event and hold it here.
 		*/
 		touch_device->current_event_ptr = touch_event_create();
+
+		if (touch_device->current_event_ptr == NULL)
+		{
+			return NYX_ERROR_OUT_OF_MEMORY;
+		}
 	}
 
 	touch_device->current_event_ptr->_parent.type = NYX_EVENT_TOUCHPANEL;

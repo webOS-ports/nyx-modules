@@ -36,12 +36,12 @@
 
 NYX_DECLARE_MODULE(NYX_DEVICE_LED_CONTROLLER, "LedControllers");
 
-static const char *backlight_max_brightness_path = NULL;
-static const char *backlight_brightness_path = NULL;
+static gchar *backlight_max_brightness_path = NULL;
+static gchar *backlight_brightness_path = NULL;
 
-static const char* backlight_device_by_type(struct udev *udev, struct udev_list_entry *devices, const char *type)
+static gchar* backlight_device_by_type(struct udev *udev, struct udev_list_entry *devices, const char *type)
 {
-    const char *path = NULL;
+    gchar *path = NULL;
     const char *device_type = NULL;
     struct udev_list_entry *l;
     struct udev_device *device;
@@ -64,13 +64,12 @@ static const char* backlight_device_by_type(struct udev *udev, struct udev_list_
     return path;
 }
 
-static const char* find_backlight_device(void)
+static gchar* find_backlight_device(void)
 {
     struct udev *udev;
     struct udev_enumerate *enumerator;
     struct udev_list_entry *devices;
-    const char *path = NULL;
-    struct udev_device *device;
+    gchar *path = NULL;
 
     udev = udev_new();
     if (!udev) {
@@ -109,7 +108,7 @@ out:
 
 nyx_error_t nyx_module_open (nyx_instance_t i, nyx_device_t** d)
 {
-    const char *backlight_path = NULL;
+    gchar *backlight_path = NULL;
 
     nyx_device_t *nyxDev = (nyx_device_t*)calloc(sizeof(nyx_device_t), 1);
     if (NULL == nyxDev)
@@ -124,11 +123,13 @@ nyx_error_t nyx_module_open (nyx_instance_t i, nyx_device_t** d)
     backlight_path = find_backlight_device();
     if (!backlight_path) {
         nyx_error(MSGID_NYX_MOD_LED_NODEVICE_ERR, 0, "Could not find a valid backlight device");
+        free(nyxDev);
         return NYX_ERROR_DEVICE_UNAVAILABLE;
     }
 
     backlight_max_brightness_path = g_build_filename(backlight_path, "max_brightness", NULL);
     backlight_brightness_path = g_build_filename(backlight_path, "brightness", NULL);
+    g_free(backlight_path);
 
     *d = (nyx_device_t*)nyxDev;
 
@@ -140,13 +141,13 @@ nyx_error_t nyx_module_close (nyx_device_t* d)
     free(d);
 
     if (backlight_max_brightness_path) {
-        free(backlight_max_brightness_path);
-        backlight_max_brightness_path = 0;
+        g_free(backlight_max_brightness_path);
+        backlight_max_brightness_path = NULL;
     }
 
     if (backlight_brightness_path) {
-        free(backlight_brightness_path);
-        backlight_brightness_path = 0;
+        g_free(backlight_brightness_path);
+        backlight_brightness_path = NULL;
     }
 
     return NYX_ERROR_NONE;
@@ -159,6 +160,7 @@ static int FileGetInt(const char *path, int *ret_data)
     char *endptr;
     gsize len;
     long int val;
+    int ret = 0;
 
     if (!path || !g_file_get_contents(path, &contents, &len, &gerror)) {
         if (gerror) {
@@ -172,6 +174,7 @@ static int FileGetInt(const char *path, int *ret_data)
     if (endptr == contents) {
         nyx_critical(MSGID_NYX_MOD_LED_FILE_CONTENT_ERR, 0, "%s: Invalid input in %s.",
             __FUNCTION__, path);
+        ret = -1;
         goto end;
     }
 
@@ -179,7 +182,7 @@ static int FileGetInt(const char *path, int *ret_data)
         *ret_data = val;
 end:
     g_free(contents);
-    return 0;
+    return ret;
 }
 
 static int FileWriteInt(const char *path, int value)
@@ -198,8 +201,8 @@ static int FileWriteInt(const char *path, int value)
 
 static nyx_error_t handle_backlight_effect(nyx_device_handle_t handle, nyx_led_controller_effect_t effect)
 {
-    int max_brightness, brightness;
-    int value, display_enabled;
+    int max_brightness;
+    int value;
     nyx_callback_status_t status = NYX_CALLBACK_STATUS_DONE;
 
     switch(effect.required.effect)
