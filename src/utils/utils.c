@@ -104,6 +104,7 @@ char *find_power_supply_sysfs_path(const char *device_type)
 	gchar *dir_path = NULL;
 	gchar *full_path = NULL;
 	gchar *result = NULL;
+	gchar *fallback = NULL;
 	const char *sub_dir_name;
 	const char *file_name;
 	char file_contents[64];
@@ -148,18 +149,43 @@ char *find_power_supply_sysfs_path(const char *device_type)
 					full_path = g_build_filename(dir_path, file_name, NULL);
 					FileGetString(full_path, file_contents, 64);
 
-					if (strcmp(file_contents, device_type) == 0)
-					{
-						result = dir_path;
-						dir_path = NULL;  /* Prevent freeing below */
-						g_free(full_path);
-						g_dir_close(subdir);
-						g_dir_close(dir);
-						return result;
-					}
-
 					g_free(full_path);
 					full_path = NULL;
+
+					/* Exact match, or any USB-family type (USB, USB_PD,
+					 * USB_DCP, USB_CDP, ...) when looking for "USB". Some
+					 * devices (e.g. Pixel 3a) expose the live charger as
+					 * "USB_PD" rather than plain "USB". */
+					if ((strcmp(file_contents, device_type) == 0) ||
+					    (strcmp(device_type, "USB") == 0 &&
+					     strncmp(file_contents, "USB", 3) == 0))
+					{
+						/* Several matching supplies can coexist (e.g. an
+						 * offline "USB" node alongside an online "USB_PD"
+						 * node); only the online one is the live charger.
+						 * Prefer it, keeping the first match as a fallback. */
+						gchar *online_path = g_build_filename(dir_path, "online", NULL);
+						char online[8] = "";
+						int online_ok = FileGetString(online_path, online, sizeof(online));
+						g_free(online_path);
+
+						if (online_ok == 0 && online[0] == '1')
+						{
+							result = dir_path;
+							dir_path = NULL;
+							g_free(fallback);
+							g_dir_close(subdir);
+							g_dir_close(dir);
+							return result;
+						}
+
+						if (!fallback)
+						{
+							fallback = dir_path;
+							dir_path = NULL;  /* keep as fallback; don't free below */
+						}
+						break;
+					}
 				}
 			}
 
@@ -172,5 +198,5 @@ char *find_power_supply_sysfs_path(const char *device_type)
 	}
 
 	g_dir_close(dir);
-	return NULL;
+	return fallback;
 }
