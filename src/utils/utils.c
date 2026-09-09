@@ -38,6 +38,12 @@
 
 /**
  * Returns string in pre-allocated buffer.
+ *
+ * On failure the buffer is set to the empty string rather than left as it was.
+ * Callers pass an uninitialised stack buffer and not all of them check the
+ * return code, and a sysfs read can fail for reasons that have nothing to do
+ * with the caller - a power_supply being unbound answers -ENODEV. Terminating
+ * the buffer means the worst such a caller can do is compare against "".
  */
 
 int FileGetString(const char *path, char *ret_string, size_t maxlen)
@@ -46,7 +52,13 @@ int FileGetString(const char *path, char *ret_string, size_t maxlen)
 	char *contents = NULL;
 	gsize len;
 
-	if (!path || !g_file_get_contents(path, &contents, &len, &gerror))
+	if (ret_string && maxlen > 0)
+	{
+		ret_string[0] = '\0';
+	}
+
+	if (!path || !ret_string || 0 == maxlen ||
+	        !g_file_get_contents(path, &contents, &len, &gerror))
 	{
 		if (gerror)
 		{
