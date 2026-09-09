@@ -90,6 +90,16 @@ typedef struct
 	bool last_present;
 } battery_device_t;
 
+/*
+ * Not locked, and it must stay that way only as long as the assumption below
+ * holds: every entry point runs on the client's default GMainContext - the nyx
+ * API calls because the client makes them from its main loop, and _handle_event
+ * because that is where g_io_add_watch() attached the udev watch. A caller that
+ * queried from a second thread could be inside battery_is_present() reading
+ * b->sysfs_path while a udev add/remove event has detect_battery_sysfs_paths()
+ * g_free() it - a use-after-free, not merely a stale reading. Add a mutex here
+ * before adding any such caller.
+ */
 static battery_device_t batteries[MAX_BATTERIES];
 static int batteries_count = 0;
 
@@ -131,6 +141,12 @@ int battery_count(void)
 	return batteries_count;
 }
 
+/*
+ * battery_name() and battery_role() hand out pointers into the battery table.
+ * Copy what you need before returning to the main loop: a udev add/remove
+ * event rebuilds the table in place, so a pointer held across one describes a
+ * different battery afterwards.
+ */
 const char *battery_name(int index)
 {
 	battery_device_t *b = battery_at(index);
