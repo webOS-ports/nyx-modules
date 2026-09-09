@@ -20,3 +20,9 @@ webos_add_test(test_batterylib
 webos_add_test(test_dev_battery
 		SOURCES test_dev_battery.c
 		LIBRARIES ${NYXLIB_LDFLAGS} ${GLIB2_LDFLAGS} ${PMLOG_LDFLAGS} -ldl -lrt -lpthread -lm)
+# Covers ../../utils/utils.c, the shared readers every battery and charger
+# value goes through. It lives here because this is where the test build for
+# them is already set up.
+webos_add_test(test_utils
+		SOURCES test_utils.c
+		LIBRARIES ${NYXLIB_LDFLAGS} ${GLIB2_LDFLAGS} ${PMLOG_LDFLAGS} -ldl -lrt -lpthread -lm)

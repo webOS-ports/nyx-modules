@@ -31,8 +31,19 @@
 #include <nyx/module/nyx_log.h>
 #include "msgid.h"
 
+/* Overridable so a host-side test can point at a fixture instead. */
+#ifndef POWER_SUPPLY_SYSFS_DIR
+#define POWER_SUPPLY_SYSFS_DIR "/sys/class/power_supply/"
+#endif
+
 /**
  * Returns string in pre-allocated buffer.
+ *
+ * On failure the buffer is set to the empty string rather than left as it was.
+ * Callers pass an uninitialised stack buffer and not all of them check the
+ * return code, and a sysfs read can fail for reasons that have nothing to do
+ * with the caller - a power_supply being unbound answers -ENODEV. Terminating
+ * the buffer means the worst such a caller can do is compare against "".
  */
 
 int FileGetString(const char *path, char *ret_string, size_t maxlen)
@@ -41,7 +52,13 @@ int FileGetString(const char *path, char *ret_string, size_t maxlen)
 	char *contents = NULL;
 	gsize len;
 
-	if (!path || !g_file_get_contents(path, &contents, &len, &gerror))
+	if (ret_string && maxlen > 0)
+	{
+		ret_string[0] = '\0';
+	}
+
+	if (!path || !ret_string || 0 == maxlen ||
+	        !g_file_get_contents(path, &contents, &len, &gerror))
 	{
 		if (gerror)
 		{
@@ -59,13 +76,23 @@ int FileGetString(const char *path, char *ret_string, size_t maxlen)
 	return 0;
 }
 
+/**
+ * Parse a number out of a file.
+ *
+ * Returns 0 and stores the value only when a number was actually parsed; -1
+ * otherwise, leaving *ret_data alone. Reporting success on an unparseable file
+ * used to leave callers reading whatever their uninitialised out-parameter
+ * happened to hold - battery_current() returned stack garbage for an empty
+ * current_now, and a positive one reads as "charging".
+ */
 int FileGetDouble(const char *path, double *ret_data)
 {
 	GError *gerror = NULL;
 	char *contents = NULL;
 	char *endptr;
 	gsize len;
-	float val;
+	double val;
+	int ret = -1;
 
 	if (!path || !g_file_get_contents(path, &contents, &len, &gerror))
 	{
@@ -78,6 +105,7 @@ int FileGetDouble(const char *path, double *ret_data)
 		return -1;
 	}
 
+	errno = 0;
 	val = strtod(contents, &endptr);
 
 	if (endptr == contents)
@@ -86,14 +114,22 @@ int FileGetDouble(const char *path, double *ret_data)
 		goto end;
 	}
 
+	if (ERANGE == errno)
+	{
+		nyx_error(MSGID_NYX_MOD_GET_STRTOD_ERR, 0, "Value out of range in %s.", path);
+		goto end;
+	}
+
 	if (ret_data)
 	{
 		*ret_data = val;
 	}
 
+	ret = 0;
+
 end:
 	g_free(contents);
-	return 0;
+	return ret;
 }
 
 char *find_power_supply_sysfs_path(const char *device_type)
@@ -107,15 +143,30 @@ char *find_power_supply_sysfs_path(const char *device_type)
 	gchar *fallback = NULL;
 	const char *sub_dir_name;
 	const char *file_name;
-	char file_contents[64];
-	char base_dir[64] = "/sys/class/power_supply/";
+	char file_contents[64] = "";
+	/*
+	 * Point at the literal rather than copying it into a fixed buffer: a
+	 * char[64] initialised from a longer string is truncated without a
+	 * terminator, and POWER_SUPPLY_SYSFS_DIR is overridable so a host-side
+	 * test can aim it at a fixture, which is exactly how it gets long.
+	 */
+	const char *base_dir = POWER_SUPPLY_SYSFS_DIR;
+
+	if (!device_type)
+	{
+		return NULL;
+	}
 
 	dir = g_dir_open(base_dir, 0, &gerror);
 
-	if (gerror)
+	if (gerror || !dir)
 	{
-		nyx_error(MSGID_NYX_MOD_SYSFS_ERR, 0, "error: %s", gerror->message);
-		g_error_free(gerror);
+		if (gerror)
+		{
+			nyx_error(MSGID_NYX_MOD_SYSFS_ERR, 0, "error: %s", gerror->message);
+			g_error_free(gerror);
+		}
+
 		return NULL;
 	}
 
@@ -133,24 +184,47 @@ char *find_power_supply_sysfs_path(const char *device_type)
 		{
 			subdir = g_dir_open(dir_path, 0, &gerror);
 
-			if (gerror)
+			if (gerror || !subdir)
 			{
-				nyx_error(MSGID_NYX_MOD_GET_DIR_ERR, 0, "error: %s", gerror->message);
-				g_error_free(gerror);
+				/*
+				 * One unreadable power_supply is not a reason to give up on
+				 * the rest of them - a supply can be unbound underneath us
+				 * mid-walk. Skip it and keep looking.
+				 */
+				if (gerror)
+				{
+					nyx_error(MSGID_NYX_MOD_GET_DIR_ERR, 0, "error: %s", gerror->message);
+					g_error_free(gerror);
+					gerror = NULL;
+				}
+
 				g_free(dir_path);
-				g_dir_close(dir);
-				return NULL;
+				dir_path = NULL;
+				continue;
 			}
 
 			while ((file_name = g_dir_read_name(subdir)) != 0)
 			{
 				if (strcmp(file_name, "type") == 0)
 				{
+					int type_ok;
+
 					full_path = g_build_filename(dir_path, file_name, NULL);
-					FileGetString(full_path, file_contents, 64);
+					type_ok = FileGetString(full_path, file_contents,
+					                        sizeof(file_contents));
 
 					g_free(full_path);
 					full_path = NULL;
+
+					/*
+					 * An unreadable type tells us nothing about this supply.
+					 * Reading on would compare against an uninitialised
+					 * buffer.
+					 */
+					if (0 != type_ok)
+					{
+						break;
+					}
 
 					/* Exact match, or any USB-family type (USB, USB_PD,
 					 * USB_DCP, USB_CDP, ...) when looking for "USB". Some
@@ -199,4 +273,100 @@ char *find_power_supply_sysfs_path(const char *device_type)
 
 	g_dir_close(dir);
 	return fallback;
+}
+
+static gint compare_path_names(gconstpointer a, gconstpointer b)
+{
+	return g_strcmp0(*(const char *const *) a, *(const char *const *) b);
+}
+
+/**
+ * Collect every power_supply of a given type rather than the first one found.
+ *
+ * find_power_supply_sysfs_path() returns whichever entry g_dir_read_name()
+ * happens to yield first, which is filesystem order and so is neither stable
+ * across boots nor meaningful. That is tolerable while a device has exactly
+ * one supply of each type and wrong as soon as it does not: a PinePhone (Pro)
+ * in its keyboard has two of type "Battery", the phone's own and the
+ * keyboard's, and picking between them by directory order picks at random.
+ *
+ * The result is sorted by node name so callers get the same list in the same
+ * order every time. NULL when nothing matches; free with g_strfreev().
+ */
+char **find_power_supply_sysfs_paths(const char *device_type)
+{
+	GError *gerror = NULL;
+	GDir *dir;
+	const char *sub_dir_name;
+	char file_contents[64];
+	const char *base_dir = POWER_SUPPLY_SYSFS_DIR;
+	GPtrArray *found;
+
+	if (!device_type)
+	{
+		return NULL;
+	}
+
+	dir = g_dir_open(base_dir, 0, &gerror);
+
+	if (gerror || !dir)
+	{
+		if (gerror)
+		{
+			nyx_error(MSGID_NYX_MOD_SYSFS_ERR, 0, "error: %s", gerror->message);
+			g_error_free(gerror);
+		}
+
+		return NULL;
+	}
+
+	found = g_ptr_array_new();
+
+	while ((sub_dir_name = g_dir_read_name(dir)) != NULL)
+	{
+		gchar *dir_path;
+		gchar *type_path;
+
+		// ignore hidden files
+		if ('.' == sub_dir_name[0])
+		{
+			continue;
+		}
+
+		dir_path = g_build_filename(base_dir, sub_dir_name, NULL);
+
+		if (!g_file_test(dir_path, G_FILE_TEST_IS_DIR))
+		{
+			g_free(dir_path);
+			continue;
+		}
+
+		type_path = g_build_filename(dir_path, "type", NULL);
+		file_contents[0] = '\0';
+
+		if (0 == FileGetString(type_path, file_contents, sizeof(file_contents)) &&
+		        0 == strcmp(file_contents, device_type))
+		{
+			g_ptr_array_add(found, dir_path);
+		}
+		else
+		{
+			g_free(dir_path);
+		}
+
+		g_free(type_path);
+	}
+
+	g_dir_close(dir);
+
+	if (0 == found->len)
+	{
+		g_ptr_array_free(found, TRUE);
+		return NULL;
+	}
+
+	g_ptr_array_sort(found, compare_path_names);
+	g_ptr_array_add(found, NULL);
+
+	return (char **) g_ptr_array_free(found, FALSE);
 }

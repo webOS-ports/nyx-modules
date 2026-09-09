@@ -47,12 +47,63 @@
 
 #define PATH_LEN 256
 
-char *battery_sysfs_path = NULL;
+/*
+ * Two is what the hardware this was written for has - a phone and the battery
+ * in its keyboard - and the cap only bounds how much of a misconfigured
+ * extra_sysfs_paths list is honoured, so leave room without inviting a config
+ * that nothing can display sensibly.
+ */
+#define MAX_BATTERIES 8
+
+/**
+ * One battery: where it lives in sysfs, what to call it, and the attribute
+ * paths derived from it.
+ *
+ * @c configured marks a battery named in nyx.conf. Those keep their slot even
+ * while their sysfs node is gone, so a detached keyboard is reported as a
+ * battery that is not present rather than vanishing from the list - a
+ * disappearing entry looks to the shell like a battery it never knew about.
+ * Batteries found by walking the power_supply class come and go with the walk.
+ */
+typedef struct
+{
+	gchar *sysfs_path;
+	bool configured;
+	char name[NYX_BATTERY_NAME_MAX];
+	char role[NYX_BATTERY_NAME_MAX];
+
+	char capacity_path[PATH_LEN];
+	char energy_now_path[PATH_LEN];
+	char energy_full_path[PATH_LEN];
+	char energy_full_design_path[PATH_LEN];
+	char charge_now_path[PATH_LEN];
+	char charge_full_path[PATH_LEN];
+	char charge_full_design_path[PATH_LEN];
+	char temperature_path[PATH_LEN];
+	char voltage_path[PATH_LEN];
+	char current_path[PATH_LEN];
+	char present_path[PATH_LEN];
+	char fake_battery_path[PATH_LEN];
+
+	/* last values seen, so _handle_event only wakes callers on a change */
+	int last_percentage;
+	bool last_present;
+} battery_device_t;
+
+/*
+ * Not locked, and it must stay that way only as long as the assumption below
+ * holds: every entry point runs on the client's default GMainContext - the nyx
+ * API calls because the client makes them from its main loop, and _handle_event
+ * because that is where g_io_add_watch() attached the udev watch. A caller that
+ * queried from a second thread could be inside battery_is_present() reading
+ * b->sysfs_path while a udev add/remove event has detect_battery_sysfs_paths()
+ * g_free() it - a use-after-free, not merely a stale reading. Add a mutex here
+ * before adding any such caller.
+ */
+static battery_device_t batteries[MAX_BATTERIES];
+static int batteries_count = 0;
 
 nyx_battery_ctia_t battery_ctia_params;
-
-int current_battery_percentage;
-bool current_battery_present;
 
 struct udev *udev = NULL;
 struct udev_monitor *mon = NULL;
@@ -61,19 +112,6 @@ guint watch = 0;
 extern nyx_device_t *nyxDev;
 extern void *battery_callback_context;
 extern nyx_device_callback_function_t battery_callback;
-
-char batt_capacity_path[PATH_LEN] = {0,};
-char batt_energy_now_path[PATH_LEN] = {0,};
-char batt_energy_full_path[PATH_LEN] = {0,};
-char batt_energy_full_design_path[PATH_LEN] = {0,};
-char batt_charge_now_path[PATH_LEN] = {0,};
-char batt_charge_full_path[PATH_LEN] = {0,};
-char batt_charge_full_design_path[PATH_LEN] = {0,};
-char batt_temperature_path[PATH_LEN] = {0,};
-char batt_voltage_path[PATH_LEN] = {0,};
-char batt_current_path[PATH_LEN] = {0,};
-char batt_present_path[PATH_LEN] = {0,};
-char batt_fake_battery_path[PATH_LEN] = {0,};
 
 nyx_battery_ctia_t *get_battery_ctia_params(void)
 {
@@ -86,49 +124,100 @@ nyx_battery_ctia_t *get_battery_ctia_params(void)
 }
 
 /**
+ * @brief The battery at an index, or NULL if there is none there.
+ */
+static battery_device_t *battery_at(int index)
+{
+	if (index < 0 || index >= batteries_count)
+	{
+		return NULL;
+	}
+
+	return &batteries[index];
+}
+
+int battery_count(void)
+{
+	return batteries_count;
+}
+
+/*
+ * battery_name() and battery_role() hand out pointers into the battery table.
+ * Copy what you need before returning to the main loop: a udev add/remove
+ * event rebuilds the table in place, so a pointer held across one describes a
+ * different battery afterwards.
+ */
+const char *battery_name(int index)
+{
+	battery_device_t *b = battery_at(index);
+
+	return b ? b->name : "";
+}
+
+const char *battery_role(int index)
+{
+	battery_device_t *b = battery_at(index);
+
+	return b ? b->role : "";
+}
+
+/**
  * @brief Read battery percentage
  *
  * @retval Battery percentage (integer)
  */
-int battery_percent(void)
+int battery_percent(int index)
 {
+	battery_device_t *b = battery_at(index);
 	int now, full;
 	int capacity;
 
+	if (!b)
+	{
+		return -1;
+	}
+
 	// TODO: Might first confirm that battery is present?
 
+	/*
+	 * The ratios below are computed in 64 bits. energy_now is in microwatt
+	 * hours, so 100 * now overflows a signed int for any pack above roughly
+	 * 21.5 Wh - which is most of them once this runs on anything larger than
+	 * a phone - and signed overflow is undefined, not merely wrong.
+	 */
+
 	/* try capacity node first but keep in mind it's not supported by all power class devices */
-	if ((capacity = nyx_utils_read_value(batt_capacity_path)) < 0)
+	if ((capacity = nyx_utils_read_value(b->capacity_path)) < 0)
 	{
 		/* capacity node is not available so next try is energy_full path */
-		if (g_file_test(batt_energy_full_path, G_FILE_TEST_EXISTS))
+		if (g_file_test(b->energy_full_path, G_FILE_TEST_EXISTS))
 		{
-			if ((now = nyx_utils_read_value(batt_energy_now_path)) < 0)
+			if ((now = nyx_utils_read_value(b->energy_now_path)) < 0)
 			{
 				return -1;
 			}
 
-			if ((full = nyx_utils_read_value(batt_energy_full_path)) <= 0)
+			if ((full = nyx_utils_read_value(b->energy_full_path)) <= 0)
 			{
 				return -1;
 			}
 
-			capacity = (100 * now / full);
+			capacity = (int)((gint64) 100 * now / full);
 		}
 		/* as last try we can use charge_now path */
-		else if (g_file_test(batt_charge_now_path, G_FILE_TEST_EXISTS))
+		else if (g_file_test(b->charge_now_path, G_FILE_TEST_EXISTS))
 		{
-			if ((full = nyx_utils_read_value(batt_charge_full_path)) <= 0)
+			if ((full = nyx_utils_read_value(b->charge_full_path)) <= 0)
 			{
 				return -1;
 			}
 
-			if ((now = nyx_utils_read_value(batt_charge_now_path)) < 0)
+			if ((now = nyx_utils_read_value(b->charge_now_path)) < 0)
 			{
 				return -1;
 			}
 
-			capacity = (100 * now / full);
+			capacity = (int)((gint64) 100 * now / full);
 		}
 		else
 		{
@@ -144,16 +233,26 @@ int battery_percent(void)
  *
  * @retval Battery temperature (integer)
  */
-int battery_temperature(void)
+int battery_temperature(int index)
 {
-	int temp;
+	battery_device_t *b = battery_at(index);
+	double temp = 0;
 
-	if ((temp = nyx_utils_read_value(batt_temperature_path)) < 0)
+	/*
+	 * temp is signed, and a battery really can be below freezing - a phone
+	 * left in a car overnight reports a negative temperature, and the CTIA
+	 * limits this module publishes exist precisely to stop it charging
+	 * there. nyx_utils_read_value() reports every negative reading as a
+	 * failed read, so the one case the charging logic most needs to see was
+	 * the one it could not. Read it through FileGetDouble() for the same
+	 * reason battery_current() does.
+	 */
+	if (!b || FileGetDouble(b->temperature_path, &temp) < 0)
 	{
 		return -1;
 	}
 
-	return temp;
+	return (int)temp;
 }
 
 /**
@@ -162,11 +261,12 @@ int battery_temperature(void)
  * @retval Battery voltage (integer)
  */
 
-int battery_voltage(void)
+int battery_voltage(int index)
 {
+	battery_device_t *b = battery_at(index);
 	int voltage;
 
-	if ((voltage = nyx_utils_read_value(batt_voltage_path)) < 0)
+	if (!b || (voltage = nyx_utils_read_value(b->voltage_path)) < 0)
 	{
 		return -1;
 	}
@@ -179,9 +279,10 @@ int battery_voltage(void)
  *
  * @retval Current (integer)
  */
-int battery_current(void)
+int battery_current(int index)
 {
-	double current;
+	battery_device_t *b = battery_at(index);
+	double current = 0;
 
 	/*
 	 * The Linux power_supply class exports current_now as a *signed*
@@ -196,7 +297,7 @@ int battery_current(void)
 	 * code and stores the parsed value through the out-parameter, so
 	 * negative readings are passed through cleanly.
 	 */
-	if (FileGetDouble(batt_current_path, &current) < 0)
+	if (!b || FileGetDouble(b->current_path, &current) < 0)
 	{
 		return -1;
 	}
@@ -210,10 +311,10 @@ int battery_current(void)
  * @retval Current (integer)
  */
 
-int battery_avg_current(void)
+int battery_avg_current(int index)
 {
 	// return battery_current for this device unless we have a way to separately read "average" current
-	return battery_current();
+	return battery_current(index);
 }
 
 /**
@@ -221,14 +322,20 @@ int battery_avg_current(void)
  *
  * @retval Battery capacity (double)
  */
-double battery_full40(void)
+double battery_full40(int index)
 {
+	battery_device_t *b = battery_at(index);
 	int charge_full;
 
-	if (!g_file_test(batt_charge_full_path, G_FILE_TEST_EXISTS) ||
-	        ((charge_full = nyx_utils_read_value(batt_charge_full_path)) < 0))
+	if (!b)
 	{
-		if ((charge_full = nyx_utils_read_value(batt_charge_full_design_path)) < 0)
+		return -1;
+	}
+
+	if (!g_file_test(b->charge_full_path, G_FILE_TEST_EXISTS) ||
+	        ((charge_full = nyx_utils_read_value(b->charge_full_path)) < 0))
+	{
+		if ((charge_full = nyx_utils_read_value(b->charge_full_design_path)) < 0)
 		{
 			return -1;
 		}
@@ -244,7 +351,7 @@ double battery_full40(void)
  * @retval Battery capacity (double)
  */
 
-double battery_rawcoulomb(void)
+double battery_rawcoulomb(int index)
 {
 	return -1;
 }
@@ -255,11 +362,12 @@ double battery_rawcoulomb(void)
  * @retval Battery capacity (double)
  */
 
-double battery_coulomb(void)
+double battery_coulomb(int index)
 {
+	battery_device_t *b = battery_at(index);
 	int charge_now;
 
-	if ((charge_now = nyx_utils_read_value(batt_charge_now_path)) < 0)
+	if (!b || (charge_now = nyx_utils_read_value(b->charge_now_path)) < 0)
 	{
 		return -1;
 	}
@@ -273,21 +381,289 @@ double battery_coulomb(void)
  *
  * @retval Battery age (double)
  */
-double battery_age(void)
+double battery_age(int index)
 {
 	return -1;
 }
 
-bool battery_is_present(void)
+bool battery_is_present(int index)
 {
+	battery_device_t *b = battery_at(index);
 	int present;
 
-	if ((present = nyx_utils_read_value(batt_present_path)) < 0)
+	if (!b)
+	{
+		return false;
+	}
+
+	/*
+	 * A battery named in nyx.conf whose node is not there at all is a
+	 * detachable one that is currently detached - the keyboard is off the
+	 * phone. Answer before touching the attributes, which would all fail
+	 * to read anyway.
+	 */
+	if (!g_file_test(b->sysfs_path, G_FILE_TEST_IS_DIR))
+	{
+		return false;
+	}
+
+	/*
+	 * "present" is optional in the power_supply class and a fixed internal
+	 * cell has no reason to export it. Reading it as absent-means-missing
+	 * would report no battery at all on such a device, so fall back to the
+	 * node's own existence, which we have just established.
+	 */
+	if (!g_file_test(b->present_path, G_FILE_TEST_EXISTS))
+	{
+		return true;
+	}
+
+	if ((present = nyx_utils_read_value(b->present_path)) < 0)
 	{
 		return false;
 	}
 
 	return (1 == present);
+}
+
+/**
+ * @brief Fill in a battery's attribute paths and its identity.
+ *
+ * @param role what the battery powers, for a caller that wants to label it.
+ *             NULL or empty means "work it out from the node name".
+ */
+static void battery_set_paths(battery_device_t *b, const char *sysfs_path,
+                              const char *role, bool configured)
+{
+	const char *node_name;
+
+	memset(b, 0, sizeof(*b));
+
+	b->sysfs_path = g_strdup(sysfs_path);
+	b->configured = configured;
+
+	node_name = strrchr(sysfs_path, '/');
+	node_name = node_name ? node_name + 1 : sysfs_path;
+	g_strlcpy(b->name, node_name, sizeof(b->name));
+
+	if (role && *role)
+	{
+		g_strlcpy(b->role, role, sizeof(b->role));
+	}
+
+	snprintf(b->capacity_path, PATH_LEN, "%s/capacity", sysfs_path);
+	snprintf(b->energy_now_path, PATH_LEN, "%s/energy_now", sysfs_path);
+	snprintf(b->energy_full_path, PATH_LEN, "%s/energy_full", sysfs_path);
+	snprintf(b->energy_full_design_path, PATH_LEN, "%s/energy_full_design",
+	         sysfs_path);
+	snprintf(b->charge_now_path, PATH_LEN, "%s/charge_now", sysfs_path);
+	snprintf(b->charge_full_path, PATH_LEN, "%s/charge_full", sysfs_path);
+	snprintf(b->charge_full_design_path, PATH_LEN, "%s/charge_full_design",
+	         sysfs_path);
+	snprintf(b->temperature_path, PATH_LEN, "%s/temp", sysfs_path);
+	snprintf(b->voltage_path, PATH_LEN, "%s/voltage_now", sysfs_path);
+	snprintf(b->current_path, PATH_LEN, "%s/current_now", sysfs_path);
+	snprintf(b->present_path, PATH_LEN, "%s/present", sysfs_path);
+	snprintf(b->fake_battery_path, PATH_LEN, "%s/pseudo_batt", sysfs_path);
+}
+
+static bool battery_already_known(const char *sysfs_path)
+{
+	int i;
+
+	for (i = 0; i < batteries_count; i++)
+	{
+		if (0 == g_strcmp0(batteries[i].sysfs_path, sysfs_path))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static void battery_add(const char *sysfs_path, const char *role,
+                        bool configured)
+{
+	if (!sysfs_path || !*sysfs_path)
+	{
+		return;
+	}
+
+	if (batteries_count >= MAX_BATTERIES)
+	{
+		nyx_warn(MSGID_NYX_MOD_BATT_TOO_MANY, 0,
+		         "more than %d batteries configured, ignoring %s", MAX_BATTERIES,
+		         sysfs_path);
+		return;
+	}
+
+	if (battery_already_known(sysfs_path))
+	{
+		return;
+	}
+
+	battery_set_paths(&batteries[batteries_count], sysfs_path, role, configured);
+	batteries_count++;
+}
+
+/**
+ * @brief Add the batteries listed in [module.battery] extra_sysfs_paths.
+ *
+ * The value is a list of entries separated by ';', each either a bare sysfs
+ * path or "role:path" - the role being what the battery powers, which the
+ * shell uses to label it:
+ *
+ *     extra_sysfs_paths=keyboard:/sys/class/power_supply/ip5xxx-battery
+ *
+ * luneos-device-config writes this; nothing here needs to know what a
+ * PinePhone keyboard is.
+ */
+static void battery_add_configured_extras(void)
+{
+	gchar *value = nyx_conf_get_path("module.battery", "extra_sysfs_paths");
+	gchar **entries;
+	int i;
+
+	if (!value)
+	{
+		return;
+	}
+
+	entries = g_strsplit(value, ";", -1);
+
+	for (i = 0; entries && entries[i]; i++)
+	{
+		gchar *entry = g_strstrip(entries[i]);
+		gchar *sep;
+
+		if (!*entry)
+		{
+			continue;
+		}
+
+		/* "role:path"; a bare path starts with '/' and has no role */
+		sep = ('/' == entry[0]) ? NULL : strchr(entry, ':');
+
+		if (sep)
+		{
+			gchar *role = g_strndup(entry, sep - entry);
+			gchar *path = g_strdup(sep + 1);
+			battery_add(g_strstrip(path), g_strstrip(role), true);
+			g_free(path);
+			g_free(role);
+		}
+		else
+		{
+			battery_add(entry, NULL, true);
+		}
+	}
+
+	g_strfreev(entries);
+	g_free(value);
+}
+
+static void battery_forget_all(void)
+{
+	int i;
+
+	for (i = 0; i < batteries_count; i++)
+	{
+		g_free(batteries[i].sysfs_path);
+	}
+
+	memset(batteries, 0, sizeof(batteries));
+	batteries_count = 0;
+}
+
+/**
+ * @brief Work out which batteries this device has, primary first.
+ *
+ * Precedence for the primary is unchanged: the runtime value from
+ * luneos-device-config, then the compile-time define, then detection. What is
+ * new is that detection no longer stops at the first hit - a device with a
+ * keyboard battery has two supplies of type "Battery" and picking between them
+ * by directory order picks at random.
+ */
+static void detect_battery_sysfs_paths(void)
+{
+	gchar *primary_path;
+	char **all_batteries;
+	int i;
+
+	battery_forget_all();
+
+	/* Runtime value from luneos-device-config wins over both. */
+	primary_path = nyx_conf_get_path("module.battery", "sysfs_path");
+
+	if (!primary_path)
+	{
+#ifdef BATTERY_SYSFS_PATH
+		/*
+		 * Honour the BATTERY_SYSFS_PATH define from the machine-specific
+		 * cmake include (e.g. meta-luneos's tenderloin.cmake). Bypasses
+		 * the directory walk in find_power_supply_sysfs_path(), which on
+		 * boards that expose more than one type=Battery power_supply
+		 * picks whichever one g_dir_read_name() returns first — order
+		 * depends on the underlying filesystem and is not deterministic.
+		 *
+		 * The HP TouchPad has two A6 microcontrollers (a6-0, a6-1) both
+		 * registered by the kernel as power_supply type=Battery; only
+		 * a6-0 actually has a battery wired to it.
+		 */
+		primary_path = g_strdup(BATTERY_SYSFS_PATH);
+#else
+		primary_path = find_power_supply_sysfs_path("Battery");
+#endif
+	}
+
+	/* Index 0 is the primary battery; everything else follows it. */
+	if (primary_path)
+	{
+		battery_add(primary_path, "main", true);
+		g_free(primary_path);
+	}
+
+	battery_add_configured_extras();
+
+	/*
+	 * Anything else the kernel calls a battery. Sorted, so the order is the
+	 * same on every boot, and skipped if it is already in the list.
+	 */
+	all_batteries = find_power_supply_sysfs_paths("Battery");
+
+	for (i = 0; all_batteries && all_batteries[i]; i++)
+	{
+		battery_add(all_batteries[i], NULL, false);
+	}
+
+	g_strfreev(all_batteries);
+
+	/*
+	 * With nothing configured and nothing found there is still one battery
+	 * slot, pointing at nothing: callers expect a primary to exist and
+	 * every read from it fails cleanly, which is what happened before.
+	 */
+	if (0 == batteries_count)
+	{
+		battery_add("/sys/class/power_supply/battery", "main", true);
+	}
+
+	for (i = 0; i < batteries_count; i++)
+	{
+		if (!*batteries[i].role)
+		{
+			g_strlcpy(batteries[i].role, (BATTERY_PRIMARY == i) ? "main" : "aux",
+			          sizeof(batteries[i].role));
+		}
+
+		batteries[i].last_present = battery_is_present(i);
+		batteries[i].last_percentage = batteries[i].last_present ? battery_percent(i) : 0;
+
+		nyx_info(MSGID_NYX_MOD_BATT_DETECTED, 0, "battery %d: %s (%s) at %s%s", i,
+		         batteries[i].name, batteries[i].role, batteries[i].sysfs_path,
+		         batteries[i].last_present ? "" : ", not present");
+	}
 }
 
 gboolean _handle_event(GIOChannel *channel, GIOCondition condition,
@@ -302,19 +678,44 @@ gboolean _handle_event(GIOChannel *channel, GIOCondition condition,
 		if (dev)
 		{
 			/*Initiate callback only if battery percentage or present parameters change*/
-			int prev_battery_percentage = current_battery_percentage;
-			bool prev_battery_present = current_battery_present;
+			bool changed = false;
+			int i;
 
-			current_battery_present = battery_is_present();
-			current_battery_percentage = current_battery_present ? battery_percent() : 0;
+			/*
+			 * A battery appearing or disappearing is a power_supply add or
+			 * remove, not a change on a node we already watch, so the list
+			 * itself has to be rebuilt: docking a PinePhone in its keyboard
+			 * adds a second battery that was not there at boot.
+			 */
+			const char *action = udev_device_get_action(dev);
 
-			if ((current_battery_present != prev_battery_present) ||
-			        (current_battery_percentage != prev_battery_percentage))
+			if (action && (0 == g_strcmp0(action, "add") ||
+			               0 == g_strcmp0(action, "remove")))
 			{
-				if (battery_callback != NULL)
+				detect_battery_sysfs_paths();
+				changed = true;
+			}
+
+			for (i = 0; i < batteries_count; i++)
+			{
+				bool present = battery_is_present(i);
+				int percentage = present ? battery_percent(i) : 0;
+
+				if (present != batteries[i].last_present ||
+				        percentage != batteries[i].last_percentage)
 				{
-					battery_callback(nyxDev, NYX_CALLBACK_STATUS_DONE, battery_callback_context);
+					changed = true;
 				}
+
+				batteries[i].last_present = present;
+				batteries[i].last_percentage = percentage;
+			}
+
+			udev_device_unref(dev);
+
+			if (changed && battery_callback != NULL)
+			{
+				battery_callback(nyxDev, NYX_CALLBACK_STATUS_DONE, battery_callback_context);
 			}
 		}
 		else
@@ -329,54 +730,17 @@ gboolean _handle_event(GIOChannel *channel, GIOCondition condition,
 	return TRUE;
 }
 
-static void detect_battery_sysfs_paths()
-{
-	/* Runtime value from luneos-device-config wins over both. */
-	battery_sysfs_path = nyx_conf_get_path("module.battery", "sysfs_path");
-
-	if (!battery_sysfs_path)
-	{
-#ifdef BATTERY_SYSFS_PATH
-	/*
-	 * Honour the BATTERY_SYSFS_PATH define from the machine-specific
-	 * cmake include (e.g. meta-luneos's tenderloin.cmake). Bypasses
-	 * the directory walk in find_power_supply_sysfs_path(), which on
-	 * boards that expose more than one type=Battery power_supply
-	 * picks whichever one g_dir_read_name() returns first — order
-	 * depends on the underlying filesystem and is not deterministic.
-	 *
-	 * The HP TouchPad has two A6 microcontrollers (a6-0, a6-1) both
-	 * registered by the kernel as power_supply type=Battery; only
-	 * a6-0 actually has a battery wired to it.
-	 */
-		battery_sysfs_path = g_strdup(BATTERY_SYSFS_PATH);
-#else
-		battery_sysfs_path = find_power_supply_sysfs_path("Battery");
-#endif
-	}
-
-	if (battery_sysfs_path)
-	{
-		snprintf(batt_capacity_path, PATH_LEN, "%s/capacity", battery_sysfs_path);
-		snprintf(batt_energy_now_path, PATH_LEN, "%s/energy_now", battery_sysfs_path);
-		snprintf(batt_energy_full_path, PATH_LEN, "%s/energy_full", battery_sysfs_path);
-		snprintf(batt_charge_now_path, PATH_LEN, "%s/charge_now", battery_sysfs_path);
-		snprintf(batt_charge_full_path, PATH_LEN, "%s/charge_full", battery_sysfs_path);
-		snprintf(batt_charge_full_design_path, PATH_LEN, "%s/charge_full_design",
-		         battery_sysfs_path);
-		snprintf(batt_temperature_path, PATH_LEN, "%s/temp", battery_sysfs_path);
-		snprintf(batt_voltage_path, PATH_LEN, "%s/voltage_now", battery_sysfs_path);
-		snprintf(batt_current_path, PATH_LEN, "%s/current_now", battery_sysfs_path);
-		snprintf(batt_present_path, PATH_LEN, "%s/present", battery_sysfs_path);
-		snprintf(batt_fake_battery_path, PATH_LEN, "%s/pseudo_batt",
-		         battery_sysfs_path);
-	}
-}
-
 static void battery_cleanup(void)
 {
-	// battery_init sets g_io_channel_set_close_on_unref, and calls g_io_channel_unref.
-	// This leaves one ref associated with the watch, so removing the watch should close the channel.
+	/*
+	 * The udev monitor owns its file descriptor, so the GIOChannel wrapped
+	 * around it must not close it - see battery_init(). Drop the watch first
+	 * so glib stops polling the fd, then let udev_monitor_unref() close it.
+	 *
+	 * This used to drop the monitor pointer without unreffing it, leaking the
+	 * monitor and its ref on the udev context on every deinit, while the
+	 * channel closed a descriptor it did not own.
+	 */
 	if (0 != watch)
 	{
 		g_source_remove(watch);
@@ -385,7 +749,7 @@ static void battery_cleanup(void)
 
 	if (NULL != mon)
 	{
-		udev_monitor_filter_remove(mon);
+		udev_monitor_unref(mon);
 		mon = NULL;
 	}
 
@@ -394,6 +758,8 @@ static void battery_cleanup(void)
 		udev_unref(udev);
 		udev = NULL;
 	}
+
+	battery_forget_all();
 
 	return;
 }
@@ -412,12 +778,8 @@ nyx_error_t battery_init(void)
 		return NYX_ERROR_GENERIC;
 	}
 
-	/*Initialize the sysfs paths*/
+	/*Initialize the sysfs paths, and with them the current present/percentage values*/
 	detect_battery_sysfs_paths();
-
-	// initialize current battery present/percentage values
-	current_battery_present = battery_is_present();
-	current_battery_percentage = current_battery_present ? battery_percent() : 0;
 
 	mon = udev_monitor_new_from_netlink(udev, "kernel");
 
@@ -469,7 +831,13 @@ nyx_error_t battery_init(void)
 
 	/* Remove the ref from g_io_channel_unix_new so we won't leak the channel if g_io_add_watch failed */
 	/* watch holds another ref which is removed in battery_cleanup */
-	g_io_channel_set_close_on_unref(channel, TRUE);
+	/*
+	 * Deliberately not g_io_channel_set_close_on_unref(): the fd belongs to
+	 * the udev monitor, which closes it in battery_cleanup(). Letting the
+	 * channel close it too would close a descriptor number that libudev still
+	 * believes it holds, and that the kernel may already have handed to
+	 * something else.
+	 */
 	g_io_channel_unref(channel);
 
 	if (0 == watch)
@@ -509,33 +877,57 @@ void battery_set_wakeup_percent(int percentage)
 	return;
 }
 
+/**
+ * @brief Turn the pseudo battery on or off.
+ *
+ * Still needed: an emulated target (qemux86 and friends) has no battery at
+ * all, and the pseudo_batt node is how it is given one to report.
+ */
 void battery_set_fakemode(bool enable)
 {
+	battery_device_t *b = battery_at(BATTERY_PRIMARY);
 	char buf[32];
 
+	if (!b)
+	{
+		return;
+	}
+
 	snprintf(buf, sizeof(buf), "%d %s", enable, "1 100 40 4100 80 1");
-	nyx_utils_write(batt_fake_battery_path, buf, sizeof(buf));
+
+	/*
+	 * strlen, not sizeof: nyx_utils_write() writes exactly the number of
+	 * bytes it is given and snprintf() does not pad, so sizeof handed the
+	 * kernel the ten uninitialised stack bytes past the terminator.
+	 */
+	nyx_utils_write(b->fake_battery_path, buf, strlen(buf));
 
 	return;
 }
 
 nyx_error_t battery_get_fakemode(bool *enable)
 {
-	char buf[32];
+	battery_device_t *b = battery_at(BATTERY_PRIMARY);
+	char buf[32] = "";
 
-	if (enable == NULL)
+	if (enable == NULL || b == NULL)
 	{
 		return NYX_ERROR_INVALID_VALUE;
 	}
 
-	if (nyx_utils_read(batt_fake_battery_path, buf, sizeof(buf)))
-	{
-		*enable = strstr(buf, "NORMAL") == 0;
-	}
-	else
+	/*
+	 * nyx_utils_read() returns the byte count, or -1 if it could not even
+	 * open the node - which is the normal case, since pseudo_batt only
+	 * exists on targets that have it. Testing for truth took that -1 as
+	 * success and ran strstr() over an uninitialised buffer.
+	 */
+	if (nyx_utils_read(b->fake_battery_path, buf, sizeof(buf)) <= 0)
 	{
 		return NYX_ERROR_INVALID_VALUE;
 	}
+
+	/* The node reports "NORMAL" when it is passing the real battery through. */
+	*enable = (NULL == strstr(buf, "NORMAL"));
 
 	return NYX_ERROR_NONE;
 }

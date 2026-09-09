@@ -57,6 +57,8 @@
 #define nyx_debug(m, args...) {}
 #undef nyx_error
 #define nyx_error(m, args...) {}
+#undef nyx_warn
+#define nyx_warn(m, args...) {}
 
 // NOTE: define this nyx_debug to send TEST messages (from THIS file, e.g. refcounts) to stderr:
 //#define nyx_debug(m, ...) {fprintf(stderr,"\n\t"); fprintf(stderr, m, ##__VA_ARGS__);}
@@ -92,23 +94,71 @@ nyx_device_callback_function_t battery_callback = &test_battery_callback;
 //*****************************************************************************
 //*****************************************************************************
 
+//
+// Point the module's config lookup at a file that does not exist, so
+// nyx_conf_get_path() returns NULL and detection follows the code path the
+// tests mock, rather than whatever /etc/nyx.conf says on the build host.
+//
+#define NYX_CONF_FILE "/nonexistent/test_dev_battery/nyx.conf"
+
 // Pull in the unit under test
-#include "../device/battery.c"
+#include "../battery.c"
 
 //*****************************************************************************
 //*****************************************************************************
+
+//
+// Node names the mocks answer for. The module builds its attribute paths by
+// appending to the sysfs path, so "Battery" here yields "Battery/capacity" and
+// friends below.
+//
+#define TEST_BATT_NODE "Battery"
+#define TEST_KBD_NODE "Keyboard"
 
 // mock out calls to nyx-modules: utils.c
+char *test_find_power_supply_sysfs_path_retval = TEST_BATT_NODE;
+
 char *find_power_supply_sysfs_path(const char *device_type)
 {
-	// return whatever they asked for: Battery, USB, Mains, Touch, or Wireless (from _detect_battery_sysfs_paths() in device/battery.c)
-	return (char *) device_type;
+	if (!test_find_power_supply_sysfs_path_retval)
+	{
+		return NULL;
+	}
+
+	// The caller frees this, so it has to be allocated - handing back the
+	// argument (or a literal) means g_free() on memory glib never owned.
+	return g_strdup(test_find_power_supply_sysfs_path_retval);
 }
 
-// define paths used in _detect_battery_sysfs_paths() in device/battery.c
+// NULL means "no extra batteries"; otherwise a NULL-terminated list of nodes.
+char **test_find_power_supply_sysfs_paths_retval = NULL;
+
+char **find_power_supply_sysfs_paths(const char *device_type)
+{
+	if (!test_find_power_supply_sysfs_paths_retval)
+	{
+		return NULL;
+	}
+
+	return g_strdupv(test_find_power_supply_sysfs_paths_retval);
+}
+
+int FileGetString(const char *path, char *ret_string, size_t maxlen)
+{
+	if (ret_string && maxlen > 0)
+	{
+		ret_string[0] = '\0';
+	}
+
+	return -1;
+}
+
+// define paths used in detect_battery_sysfs_paths() in battery.c
+static char *test_batt_sysfs_path = TEST_BATT_NODE;
 static char *test_batt_capacity_path = "Battery/capacity";
 static char *test_batt_energy_now_path = "Battery/energy_now";
 static char *test_batt_energy_full_path = "Battery/energy_full";
+static char *test_batt_energy_full_design_path = "Battery/energy_full_design";
 static char *test_batt_charge_now_path = "Battery/charge_now";
 static char *test_batt_charge_full_path = "Battery/charge_full";
 static char *test_batt_charge_full_design_path = "Battery/charge_full_design";
@@ -116,11 +166,50 @@ static char *test_batt_temperature_path = "Battery/temp";
 static char *test_batt_voltage_path = "Battery/voltage_now";
 static char *test_batt_current_path = "Battery/current_now";
 static char *test_batt_present_path = "Battery/present";
+static char *test_batt_fake_battery_path = "Battery/pseudo_batt";
+
+//
+// battery_current() and battery_temperature() read through FileGetDouble() so
+// that a negative reading - discharging, or a battery below freezing - is not
+// confused with a failed read. Both are mocked here, by path, because they are
+// the two values that are legitimately signed.
+//
+double test_FileGetDouble_retval = 0;
+int test_FileGetDouble_result = -1;
+double test_FileGetDouble_temp_retval = 0;
+int test_FileGetDouble_temp_result = -1;
+
+int FileGetDouble(const char *path, double *ret_data)
+{
+	int result = test_FileGetDouble_result;
+	double value = test_FileGetDouble_retval;
+
+	g_assert_nonnull(path);
+
+	if (0 == strncmp(path, test_batt_temperature_path, PATH_LEN))
+	{
+		result = test_FileGetDouble_temp_result;
+		value = test_FileGetDouble_temp_retval;
+	}
+
+	if (0 != result)
+	{
+		return -1;
+	}
+
+	if (ret_data)
+	{
+		*ret_data = value;
+	}
+
+	return 0;
+}
 
 // define (mocked) values returns for above paths
 int32_t test_batt_capacity_path_retval = 0;
 int32_t test_batt_energy_now_path_retval = 0;
 int32_t test_batt_energy_full_path_retval = 0;
+int32_t test_batt_energy_full_design_path_retval = 0;
 int32_t test_batt_charge_now_path_retval = 0;
 int32_t test_batt_charge_full_path_retval = 0;
 int32_t test_batt_charge_full_design_path_retval = 0;
@@ -128,6 +217,7 @@ int32_t test_batt_temperature_path_retval = 0;
 int32_t test_batt_voltage_path_retval = 0;
 int32_t test_batt_current_path_retval = 0;
 int32_t test_batt_present_path_retval = 0;
+int32_t test_batt_fake_battery_path_retval = 0;
 
 #define ifMatchReturnRetvalForTestPath(value) if (0 == strncmp(path, value, PATH_LEN)) { return value##_retval; }
 // ifMatchReturnRetvalForTestPath(batt_capacity) expands to:
@@ -143,19 +233,68 @@ int32_t nyx_utils_read_value(char *path)
 	ifMatchReturnRetvalForTestPath(test_batt_capacity_path)
 	else ifMatchReturnRetvalForTestPath(test_batt_energy_now_path)
 		else ifMatchReturnRetvalForTestPath(test_batt_energy_full_path)
-			else ifMatchReturnRetvalForTestPath(test_batt_charge_now_path)
-				else ifMatchReturnRetvalForTestPath(test_batt_charge_full_path)
-					else ifMatchReturnRetvalForTestPath(test_batt_charge_full_design_path)
-						else ifMatchReturnRetvalForTestPath(test_batt_temperature_path)
-							else ifMatchReturnRetvalForTestPath(test_batt_voltage_path)
-								else ifMatchReturnRetvalForTestPath(test_batt_current_path)
-									else ifMatchReturnRetvalForTestPath(test_batt_present_path)
+			else ifMatchReturnRetvalForTestPath(test_batt_energy_full_design_path)
+				else ifMatchReturnRetvalForTestPath(test_batt_charge_now_path)
+					else ifMatchReturnRetvalForTestPath(test_batt_charge_full_path)
+						else ifMatchReturnRetvalForTestPath(test_batt_charge_full_design_path)
+							else ifMatchReturnRetvalForTestPath(test_batt_temperature_path)
+								else ifMatchReturnRetvalForTestPath(test_batt_voltage_path)
+									else ifMatchReturnRetvalForTestPath(test_batt_current_path)
+										else ifMatchReturnRetvalForTestPath(test_batt_present_path)
+											else ifMatchReturnRetvalForTestPath(test_batt_fake_battery_path)
 
-										// bad path: print error, force g_assert, and return -1
-										fprintf(stderr, "Bad path (%s) passed to nyx_utils_read_value\n", path);
+												// bad path: print error, force g_assert, and return -1
+												fprintf(stderr, "Bad path (%s) passed to nyx_utils_read_value\n", path);
 
 	g_assert_true(path == (const char *)"Bad path passed to nyx_utils_read_value");
 	return -1;
+}
+
+//
+// Fake ("pseudo") battery mode, which is how an emulated target with no
+// battery of its own is given one. nyx_utils_read() answers -1 when it cannot
+// even open the node, which is the usual case off-target, and the module has
+// to treat that as an error rather than as a successful read.
+//
+int32_t test_nyx_utils_read_result = -1;
+char test_nyx_utils_read_contents[64] = "";
+char test_nyx_utils_write_buf[64] = "";
+size_t test_nyx_utils_write_size = 0;
+
+int32_t nyx_utils_read(char *path, char *buf, size_t size)
+{
+	size_t len;
+
+	g_assert_nonnull(buf);
+	g_assert_true(size > 0);
+
+	if (test_nyx_utils_read_result < 0)
+	{
+		// Deliberately leaves buf untouched, exactly as nyx-lib does.
+		return -1;
+	}
+
+	len = g_strlcpy(buf, test_nyx_utils_read_contents, size);
+
+	if (len >= size)
+	{
+		len = size - 1;
+	}
+
+	return (int32_t) len;
+}
+
+void nyx_utils_write(char *path, char *buf, size_t size)
+{
+	g_assert_nonnull(buf);
+	g_assert_true(size < sizeof(test_nyx_utils_write_buf));
+
+	// Record exactly what the module asked to be written: passing sizeof the
+	// caller's buffer rather than the string length used to push uninitialised
+	// stack bytes past the terminator into the kernel.
+	memcpy(test_nyx_utils_write_buf, buf, size);
+	test_nyx_utils_write_buf[size] = '\0';
+	test_nyx_utils_write_size = size;
 }
 
 //*****************************************************************************
@@ -209,11 +348,20 @@ struct udev *udev_new(void)
 }
 
 /* kernel and udev generated events over netlink */
+int32_t testUdevMonitorRefcount = 0;
 struct udev_monitor testUdevMonitorStruct;
 struct udev_monitor *testUdevMonitorStruct_retval = &testUdevMonitorStruct;
 struct udev_monitor *udev_monitor_new_from_netlink(struct udev *udev,
         const char *name)
 {
+	// are we returning our valid "test" monitor (as opposed to NULL)?
+	if (&testUdevMonitorStruct == testUdevMonitorStruct_retval)
+	{
+		testUdevMonitorRefcount++;
+	}
+
+	nyx_debug("In udev_monitor_new_from_netlink: testUdevMonitorRefcount = %d",
+	          testUdevMonitorRefcount);
 	return testUdevMonitorStruct_retval;
 }
 
@@ -244,7 +392,48 @@ int udev_monitor_filter_remove(struct udev_monitor *udev_monitor)
 	return 0;
 }
 
-void udev_unref(struct udev *udev)
+//
+// The monitor owns the descriptor the GIOChannel is wrapped around, so it has
+// to be unreffed on the way out. Dropping the pointer instead leaked it, along
+// with its reference on the udev context.
+//
+struct udev_monitor *udev_monitor_unref(struct udev_monitor *udev_monitor)
+{
+	if (&testUdevMonitorStruct == udev_monitor)
+	{
+		testUdevMonitorRefcount--;
+	}
+
+	nyx_debug("In udev_monitor_unref: testUdevMonitorRefcount = %d",
+	          testUdevMonitorRefcount);
+	return NULL;
+}
+
+// _handle_event() rebuilds the battery list on add/remove
+const char *testUdevDeviceAction_retval = NULL;
+const char *udev_device_get_action(struct udev_device *udev_device)
+{
+	return testUdevDeviceAction_retval;
+}
+
+int32_t testUdevDeviceRefcount = 0;
+struct udev_device *udev_device_ref(struct udev_device *udev_device)
+{
+	testUdevDeviceRefcount++;
+	return udev_device;
+}
+
+struct udev_device *udev_device_unref(struct udev_device *udev_device)
+{
+	if (udev_device)
+	{
+		testUdevDeviceRefcount--;
+	}
+
+	return NULL;
+}
+
+struct udev *udev_unref(struct udev *udev)
 {
 	// is this a request for our valid "test" udev?
 	if (&testUdevStruct == udev)
@@ -254,7 +443,7 @@ void udev_unref(struct udev *udev)
 	}
 
 	nyx_debug("In udev_unref: testUdevRefcount = %d", testUdevRefcount);
-	return;
+	return NULL;
 }
 
 //*****************************************************************************
@@ -266,6 +455,7 @@ void udev_unref(struct udev *udev)
 int32_t test_batt_capacity_path_exists = false;
 int32_t test_batt_energy_now_path_exists = false;
 int32_t test_batt_energy_full_path_exists = false;
+int32_t test_batt_energy_full_design_path_exists = false;
 int32_t test_batt_charge_now_path_exists = false;
 int32_t test_batt_charge_full_path_exists = false;
 int32_t test_batt_charge_full_design_path_exists = false;
@@ -273,6 +463,15 @@ int32_t test_batt_temperature_path_exists = false;
 int32_t test_batt_voltage_path_exists = false;
 int32_t test_batt_current_path_exists = false;
 int32_t test_batt_present_path_exists = false;
+int32_t test_batt_fake_battery_path_exists = false;
+
+//
+// Whether the power_supply directory itself is there. A configured battery
+// whose node has gone - a keyboard unplugged from the phone - keeps its slot
+// in the list and is reported as not present, so the module asks this before
+// it reads any attribute.
+//
+int32_t test_batt_sysfs_path_is_dir = true;
 
 #define ifMatchReturnExistsForTestPath(value) if (0 == strncmp(path, value, PATH_LEN)) { return value##_exists; }
 // ifMatchReturnExistsForTestPath(batt_capacity) expands to:
@@ -285,6 +484,17 @@ int32_t test_batt_present_path_exists = false;
 gboolean g_file_test(const gchar *path, GFileTest test)
 {
 	//fprintf(stderr,"path (%s) passed to g_file_test\n", path);
+	if (G_FILE_TEST_IS_DIR == test)
+	{
+		// Only ever asked about a power_supply node itself, not an attribute.
+		if (0 == strncmp(path, test_batt_sysfs_path, PATH_LEN))
+		{
+			return test_batt_sysfs_path_is_dir;
+		}
+
+		return false;
+	}
+
 	if (G_FILE_TEST_EXISTS != test)
 	{
 		fprintf(stderr, "Un-mocked test (%d) passed to g_file_test\n",
@@ -296,16 +506,18 @@ gboolean g_file_test(const gchar *path, GFileTest test)
 	ifMatchReturnExistsForTestPath(test_batt_capacity_path)
 	else ifMatchReturnExistsForTestPath(test_batt_energy_now_path)
 		else ifMatchReturnExistsForTestPath(test_batt_energy_full_path)
-			else ifMatchReturnExistsForTestPath(test_batt_charge_now_path)
-				else ifMatchReturnExistsForTestPath(test_batt_charge_full_path)
-					else ifMatchReturnExistsForTestPath(test_batt_charge_full_design_path)
-						else ifMatchReturnExistsForTestPath(test_batt_temperature_path)
-							else ifMatchReturnExistsForTestPath(test_batt_voltage_path)
-								else ifMatchReturnExistsForTestPath(test_batt_current_path)
-									else ifMatchReturnExistsForTestPath(test_batt_present_path)
+			else ifMatchReturnExistsForTestPath(test_batt_energy_full_design_path)
+				else ifMatchReturnExistsForTestPath(test_batt_charge_now_path)
+					else ifMatchReturnExistsForTestPath(test_batt_charge_full_path)
+						else ifMatchReturnExistsForTestPath(test_batt_charge_full_design_path)
+							else ifMatchReturnExistsForTestPath(test_batt_temperature_path)
+								else ifMatchReturnExistsForTestPath(test_batt_voltage_path)
+									else ifMatchReturnExistsForTestPath(test_batt_current_path)
+										else ifMatchReturnExistsForTestPath(test_batt_present_path)
+											else ifMatchReturnExistsForTestPath(test_batt_fake_battery_path)
 
-										// bad path: print error, force g_assert, and return -1
-										fprintf(stderr, "Bad path (%s) passed to g_file_test\n", path);
+												// bad path: print error, force g_assert, and return -1
+												fprintf(stderr, "Bad path (%s) passed to g_file_test\n", path);
 
 	g_assert_true(path == (const char *)"Bad path passed to g_file_test");
 	return -1;
@@ -437,6 +649,7 @@ test_battery_init(/*api_test_fixture *fixture, gconstpointer unused*/)
 	// make sure we didn't leak any GIOChannel or udev references
 	g_assert_true(0 == testGIOChannelRefcount);
 	g_assert_true(0 == testUdevRefcount);
+	g_assert_true(0 == testUdevMonitorRefcount);
 
 	// setup GOOD return value for udev_new
 	testUdevStruct_retval = &testUdevStruct;
@@ -450,6 +663,7 @@ test_battery_init(/*api_test_fixture *fixture, gconstpointer unused*/)
 	// make sure we didn't leak any GIOChannel or udev references
 	g_assert_true(0 == testGIOChannelRefcount);
 	g_assert_true(0 == testUdevRefcount);
+	g_assert_true(0 == testUdevMonitorRefcount);
 
 	// setup GOOD return value for udev_monitor_new_from_netlink
 	testUdevMonitorStruct_retval = &testUdevMonitorStruct;
@@ -463,6 +677,7 @@ test_battery_init(/*api_test_fixture *fixture, gconstpointer unused*/)
 	// make sure we didn't leak any GIOChannel or udev references
 	g_assert_true(0 == testGIOChannelRefcount);
 	g_assert_true(0 == testUdevRefcount);
+	g_assert_true(0 == testUdevMonitorRefcount);
 
 	// setup GOOD return value for udev_monitor_filter_add_match_subsystem_devtype
 	testUdevMonitorFilterAddMatchResult_retval = 0;
@@ -476,6 +691,7 @@ test_battery_init(/*api_test_fixture *fixture, gconstpointer unused*/)
 	// make sure we didn't leak any GIOChannel or udev references
 	g_assert_true(0 == testGIOChannelRefcount);
 	g_assert_true(0 == testUdevRefcount);
+	g_assert_true(0 == testUdevMonitorRefcount);
 
 	// setup GOOD return value for udev_monitor_enable_receiving
 	testUdevMonitorEnableReceiving_retval = 0;
@@ -489,6 +705,7 @@ test_battery_init(/*api_test_fixture *fixture, gconstpointer unused*/)
 	// make sure we didn't leak any GIOChannel or udev references
 	g_assert_true(0 == testGIOChannelRefcount);
 	g_assert_true(0 == testUdevRefcount);
+	g_assert_true(0 == testUdevMonitorRefcount);
 
 	// setup GOOD return value for udev_monitor_get_fd
 	testUdevMonitorGetFd_retval = 0;
@@ -502,6 +719,7 @@ test_battery_init(/*api_test_fixture *fixture, gconstpointer unused*/)
 	// make sure we didn't leak any GIOChannel or udev references
 	g_assert_true(0 == testGIOChannelRefcount);
 	g_assert_true(0 == testUdevRefcount);
+	g_assert_true(0 == testUdevMonitorRefcount);
 
 	// setup GOOD return value for g_io_channel_unix_new
 	testGIOChannel_retval = &testGIOChannel;
@@ -515,6 +733,7 @@ test_battery_init(/*api_test_fixture *fixture, gconstpointer unused*/)
 	// make sure we didn't leak any GIOChannel or udev references
 	g_assert_true(0 == testGIOChannelRefcount);
 	g_assert_true(0 == testUdevRefcount);
+	g_assert_true(0 == testUdevMonitorRefcount);
 
 	// setup GOOD return value for g_io_add_watch and force expected event
 	nyx_debug("\nIn test_battery_init: setup GOOD return value for g_io_add_watch");
@@ -524,6 +743,7 @@ test_battery_init(/*api_test_fixture *fixture, gconstpointer unused*/)
 	// make sure we didn't leak any GIOChannel or udev references
 	g_assert_true(0 == testGIOChannelRefcount);
 	g_assert_true(0 == testUdevRefcount);
+	g_assert_true(0 == testUdevMonitorRefcount);
 	nyx_debug("\n");
 }
 
@@ -597,6 +817,7 @@ void reset_battery_path_retvals(void)
 	test_batt_capacity_path_exists = false;
 	test_batt_energy_now_path_exists = false;
 	test_batt_energy_full_path_exists = false;
+	test_batt_energy_full_design_path_exists = false;
 	test_batt_charge_now_path_exists = false;
 	test_batt_charge_full_path_exists = false;
 	test_batt_charge_full_design_path_exists = false;
@@ -604,10 +825,12 @@ void reset_battery_path_retvals(void)
 	test_batt_voltage_path_exists = false;
 	test_batt_current_path_exists = false;
 	test_batt_present_path_exists = false;
+	test_batt_fake_battery_path_exists = false;
 
 	test_batt_capacity_path_retval = -1;
 	test_batt_energy_now_path_retval = -1;
 	test_batt_energy_full_path_retval = -1;
+	test_batt_energy_full_design_path_retval = -1;
 	test_batt_charge_now_path_retval = -1;
 	test_batt_charge_full_path_retval = -1;
 	test_batt_charge_full_design_path_retval = -1;
@@ -615,30 +838,62 @@ void reset_battery_path_retvals(void)
 	test_batt_voltage_path_retval = -1;
 	test_batt_current_path_retval = -1;
 	test_batt_present_path_retval = -1;
+	test_batt_fake_battery_path_retval = -1;
+
+	test_batt_sysfs_path_is_dir = true;
+	test_FileGetDouble_result = -1;
+	test_FileGetDouble_retval = 0;
+	test_FileGetDouble_temp_result = -1;
+	test_FileGetDouble_temp_retval = 0;
+	test_nyx_utils_read_result = -1;
+	test_nyx_utils_read_contents[0] = '\0';
+	test_nyx_utils_write_buf[0] = '\0';
+	test_nyx_utils_write_size = 0;
+
+	test_find_power_supply_sysfs_path_retval = TEST_BATT_NODE;
+	test_find_power_supply_sysfs_paths_retval = NULL;
+
+	//
+	// Readings are taken per battery, so there has to be a battery in the
+	// list before any of them mean anything. Rebuild it from the mocks above
+	// rather than leaning on whatever a previous test left behind.
+	//
+	detect_battery_sysfs_paths();
+	g_assert_true(1 == battery_count());
+}
+
+//
+// Release the battery list. Every test that has built one should end with
+// this, so a leak check sees a clean exit.
+//
+void forget_batteries(void)
+{
+	battery_forget_all();
+	g_assert_true(0 == battery_count());
 }
 
 //
 // Tests for the battery_percent API method
-// int battery_percent(void)
+// int battery_percent(int index)
 //
 static void
 test_battery_percent(/*api_test_fixture *fixture, gconstpointer unused*/)
 {
 	// Check for failure returned from test_batt_capacity_path if NO paths available
 	reset_battery_path_retvals();
-	g_assert_true(-1 == battery_percent());
+	g_assert_true(-1 == battery_percent(BATTERY_PRIMARY));
 
 	// Check for failure returned from test_batt_capacity_path if (only) invalid capacity
 	reset_battery_path_retvals();
 	test_batt_capacity_path_exists = true;
 	test_batt_capacity_path_retval = -1;
-	g_assert_true(-1 == battery_percent());
+	g_assert_true(-1 == battery_percent(BATTERY_PRIMARY));
 
 	// Check for correct return value from test_batt_capacity_path using valid capacity
 	reset_battery_path_retvals();
 	test_batt_capacity_path_exists = true;
 	test_batt_capacity_path_retval = 80;
-	g_assert_true(80 == battery_percent());
+	g_assert_true(80 == battery_percent(BATTERY_PRIMARY));
 
 
 	// Check for failure returned from test_batt_capacity_path using invalid energy_now
@@ -647,7 +902,7 @@ test_battery_percent(/*api_test_fixture *fixture, gconstpointer unused*/)
 	test_batt_energy_full_path_exists = true;
 	test_batt_energy_now_path_retval = -1;
 	test_batt_energy_full_path_retval = 1000000;
-	g_assert_true(-1 == battery_percent());
+	g_assert_true(-1 == battery_percent(BATTERY_PRIMARY));
 
 	// Check for failure returned from test_batt_capacity_path using invalid energy_full
 	reset_battery_path_retvals();
@@ -655,7 +910,7 @@ test_battery_percent(/*api_test_fixture *fixture, gconstpointer unused*/)
 	test_batt_energy_full_path_exists = true;
 	test_batt_energy_now_path_retval = 800000;
 	test_batt_energy_full_path_retval = -1;
-	g_assert_true(-1 == battery_percent());
+	g_assert_true(-1 == battery_percent(BATTERY_PRIMARY));
 
 	// Check for correct return value from test_batt_capacity_path using energy_now / energy_full
 	reset_battery_path_retvals();
@@ -663,7 +918,7 @@ test_battery_percent(/*api_test_fixture *fixture, gconstpointer unused*/)
 	test_batt_energy_full_path_exists = true;
 	test_batt_energy_now_path_retval = 800000;
 	test_batt_energy_full_path_retval = 1000000;
-	g_assert_true(80 == battery_percent());
+	g_assert_true(80 == battery_percent(BATTERY_PRIMARY));
 
 
 	// Check for failure returned from test_batt_capacity_path using invalid charge_now
@@ -672,7 +927,7 @@ test_battery_percent(/*api_test_fixture *fixture, gconstpointer unused*/)
 	test_batt_charge_full_path_exists = true;
 	test_batt_charge_now_path_retval = -1;
 	test_batt_charge_full_path_retval = 2300000;
-	g_assert_true(-1 == battery_percent());
+	g_assert_true(-1 == battery_percent(BATTERY_PRIMARY));
 
 	// Check for failure returned from test_batt_capacity_path using invalid charge_full
 	reset_battery_path_retvals();
@@ -680,7 +935,7 @@ test_battery_percent(/*api_test_fixture *fixture, gconstpointer unused*/)
 	test_batt_charge_full_path_exists = true;
 	test_batt_charge_now_path_retval = 1840000;
 	test_batt_charge_full_path_retval = -1;
-	g_assert_true(-1 == battery_percent());
+	g_assert_true(-1 == battery_percent(BATTERY_PRIMARY));
 
 	// Check for correct return value from test_batt_capacity_path using charge_now / charge_full
 	reset_battery_path_retvals();
@@ -688,120 +943,158 @@ test_battery_percent(/*api_test_fixture *fixture, gconstpointer unused*/)
 	test_batt_charge_full_path_exists = true;
 	test_batt_charge_now_path_retval = 1840000;
 	test_batt_charge_full_path_retval = 2300000;
-	g_assert_true(80 == battery_percent());
+	g_assert_true(80 == battery_percent(BATTERY_PRIMARY));
 
+	// Out-of-range battery
+	g_assert_true(-1 == battery_percent(battery_count()));
+
+	forget_batteries();
 }
 
 //
 // Tests for the battery_temperature API method
-// int battery_temperature(void)
+// int battery_temperature(int index)
 //
 static void
 test_battery_temperature(/*api_test_fixture *fixture, gconstpointer unused*/)
 {
-	// Check for failure returned from test_batt_temperature_path
+	// Out-of-range battery
 	reset_battery_path_retvals();
-	test_batt_temperature_path_exists = false;
-	test_batt_temperature_path_retval = 333;
-	g_assert_true(-1 == battery_temperature());
+	g_assert_true(-1 == battery_temperature(battery_count()));
 
 	// Check for failure returned from test_batt_temperature_path
 	reset_battery_path_retvals();
-	test_batt_temperature_path_exists = true;
-	test_batt_temperature_path_retval = -1;
-	g_assert_true(-1 == battery_temperature());
+	test_FileGetDouble_temp_result = -1;
+	g_assert_true(-1 == battery_temperature(BATTERY_PRIMARY));
 
 	// Check for correct return value from test_batt_temperature_path
 	reset_battery_path_retvals();
-	test_batt_temperature_path_exists = true;
-	test_batt_temperature_path_retval = 333;
-	g_assert_true(333 == battery_temperature());
+	test_FileGetDouble_temp_result = 0;
+	test_FileGetDouble_temp_retval = 333;
+	g_assert_true(333 == battery_temperature(BATTERY_PRIMARY));
+
+	//
+	// A battery below freezing - a phone left in a car overnight. Reading
+	// temp through nyx_utils_read_value() reported every negative as a
+	// failed read, so the charging logic could not see the one condition
+	// the CTIA minimum charge temperature exists to catch.
+	//
+	reset_battery_path_retvals();
+	test_FileGetDouble_temp_result = 0;
+	test_FileGetDouble_temp_retval = -50;
+	g_assert_true(-50 == battery_temperature(BATTERY_PRIMARY));
+
+	reset_battery_path_retvals();
+	test_FileGetDouble_temp_result = 0;
+	test_FileGetDouble_temp_retval = -200;
+	g_assert_true(-200 == battery_temperature(BATTERY_PRIMARY));
+
+	// Zero is a real reading, not an absent one
+	reset_battery_path_retvals();
+	test_FileGetDouble_temp_result = 0;
+	test_FileGetDouble_temp_retval = 0;
+	g_assert_true(0 == battery_temperature(BATTERY_PRIMARY));
+
+	forget_batteries();
 }
 
 //
 // Tests for the battery_voltage API method
-// int battery_voltage(void)
+// int battery_voltage(int index)
 //
 static void
 test_battery_voltage(/*api_test_fixture *fixture, gconstpointer unused*/)
 {
-	// Check for failure returned from test_batt_voltage_path
+	// Out-of-range battery
 	reset_battery_path_retvals();
-	test_batt_voltage_path_exists = false;
-	test_batt_voltage_path_retval = 3995000;
-	g_assert_true(-1 == battery_voltage());
+	g_assert_true(-1 == battery_voltage(battery_count()));
 
 	// Check for failure returned from test_batt_voltage_path
 	reset_battery_path_retvals();
 	test_batt_voltage_path_exists = true;
 	test_batt_voltage_path_retval = -1;
-	g_assert_true(-1 == battery_voltage());
+	g_assert_true(-1 == battery_voltage(BATTERY_PRIMARY));
 
 	// Check for correct return value from test_batt_voltage_path
 	// TODO: Should this be in mV or uV?  Device returns uV but emulator returns mV!
 	reset_battery_path_retvals();
 	test_batt_voltage_path_exists = true;
 	test_batt_voltage_path_retval = 3995000;
-	g_assert_true(3995000 == battery_voltage());
+	g_assert_true(3995000 == battery_voltage(BATTERY_PRIMARY));
+
+	forget_batteries();
 }
 
 //
 // Tests for the battery_current API method
-// int battery_current(void)
+// int battery_current(int index)
 //
 static void
 test_battery_current(/*api_test_fixture *fixture, gconstpointer unused*/)
 {
-	// Check for failure returned from test_batt_current_path
+	// Out-of-range battery
 	reset_battery_path_retvals();
-	test_batt_current_path_exists = false;
-	test_batt_current_path_retval = 371870;
-	g_assert_true(-1 == battery_current());
+	g_assert_true(-1 == battery_current(battery_count()));
 
-	// Check for failure returned from test_batt_current_path
+	// Check for failure returned when the node cannot be read
 	reset_battery_path_retvals();
-	test_batt_current_path_exists = true;
-	test_batt_current_path_retval = -1;
-	g_assert_true(-1 == battery_current());
+	test_FileGetDouble_result = -1;
+	g_assert_true(-1 == battery_current(BATTERY_PRIMARY));
 
-	// Check for correct return value from test_batt_current_path
+	// Check for correct return value while charging
 	reset_battery_path_retvals();
-	test_batt_current_path_exists = true;
-	test_batt_current_path_retval = 371870;
+	test_FileGetDouble_result = 0;
+	test_FileGetDouble_retval = 371870;
 	// TODO: Should this be in mA or uA?  Device returns uA but emulator returns mA!
-	g_assert_true(371870 == battery_current());
+	g_assert_true(371870 == battery_current(BATTERY_PRIMARY));
+
+	//
+	// current_now is signed: negative means discharging. Reading it through
+	// nyx_utils_read_value() collapsed that into "read failed" and reported
+	// -1 the whole time the device was on battery.
+	//
+	reset_battery_path_retvals();
+	test_FileGetDouble_result = 0;
+	test_FileGetDouble_retval = -1543000;
+	g_assert_true(-1543000 == battery_current(BATTERY_PRIMARY));
+
+	// A parse failure must not be reported as a reading. FileGetDouble()
+	// used to return success without storing anything, leaving the caller
+	// to return whatever was on the stack.
+	reset_battery_path_retvals();
+	test_FileGetDouble_result = -1;
+	test_FileGetDouble_retval = 12345;
+	g_assert_true(-1 == battery_current(BATTERY_PRIMARY));
+
+	forget_batteries();
 }
 
 //
 // Tests for the battery_avg_current API method
-// int battery_avg_current(void)
+// int battery_avg_current(int index)
 //
 static void
 test_battery_avg_current(/*api_test_fixture *fixture, gconstpointer unused*/)
 {
-	// Check for failure returned from test_batt_current_path
+	// There is no separate "average" node, so this tracks battery_current()
 	reset_battery_path_retvals();
-	test_batt_current_path_exists = false;
-	test_batt_current_path_retval = 371870;
-	g_assert_true(-1 == battery_current());
+	test_FileGetDouble_result = -1;
+	g_assert_true(-1 == battery_avg_current(BATTERY_PRIMARY));
 
-	// Check for failure returned from test_batt_current_path
 	reset_battery_path_retvals();
-	test_batt_current_path_exists = true;
-	test_batt_current_path_retval = -1;
-	g_assert_true(-1 == battery_current());
-
-	// Check for correct return value from test_batt_current_path
-	reset_battery_path_retvals();
-	test_batt_current_path_exists = true;
-	test_batt_current_path_retval = 371870;
+	test_FileGetDouble_result = 0;
+	test_FileGetDouble_retval = 371870;
 	// TODO: Should this be in mA or uA?  Device returns uA but emulator returns mA!
-	g_assert_true(371870 == battery_current());
+	g_assert_true(371870 == battery_avg_current(BATTERY_PRIMARY));
+	g_assert_true(battery_current(BATTERY_PRIMARY) == battery_avg_current(
+	                  BATTERY_PRIMARY));
+
+	forget_batteries();
 }
 
 //
 // Tests for the battery_full40 API method
-// double battery_full40(void)
+// double battery_full40(int index)
 //
 static void
 test_battery_full40(/*api_test_fixture *fixture, gconstpointer unused*/)
@@ -810,121 +1103,142 @@ test_battery_full40(/*api_test_fixture *fixture, gconstpointer unused*/)
 	reset_battery_path_retvals();
 	test_batt_charge_full_path_exists = false;
 	test_batt_charge_full_path_retval = 2300000;
-	g_assert_true(-1 == battery_full40());
+	g_assert_true(-1 == battery_full40(BATTERY_PRIMARY));
 
 	// Check for failure returned from test_batt_charge_full_path
 	reset_battery_path_retvals();
 	test_batt_charge_full_path_exists = true;
 	test_batt_charge_full_path_retval = -1;
-	g_assert_true(-1 == battery_full40());
+	g_assert_true(-1 == battery_full40(BATTERY_PRIMARY));
 
 	// Check for correct return value from test_batt_charge_full_path
 	reset_battery_path_retvals();
 	test_batt_charge_full_path_exists = true;
 	test_batt_charge_full_path_retval = 2300000;
 	// TODO: Should this be in mA or uA?  Device returns uA but emulator returns mA!
-	g_assert_true((2300000 / 1000) == battery_full40());
+	g_assert_true((2300000 / 1000) == battery_full40(BATTERY_PRIMARY));
 
 
-	// Check for failure returned from test_batt_charge_full_design_path
-	reset_battery_path_retvals();
-	test_batt_charge_full_design_path_exists = false;
-	test_batt_charge_full_design_path_retval = 3400000;
-	g_assert_true(-1 == battery_full40());
-
+	// charge_full_design is read without an existence check - it is the last
+	// fallback, and a failed read is the answer either way
 	// Check for failure returned from test_batt_charge_full_design_path
 	reset_battery_path_retvals();
 	test_batt_charge_full_design_path_exists = true;
 	test_batt_charge_full_design_path_retval = -1;
-	g_assert_true(-1 == battery_full40());
+	g_assert_true(-1 == battery_full40(BATTERY_PRIMARY));
 
 	// Check for correct return value from test_batt_charge_full_design_path
 	reset_battery_path_retvals();
 	test_batt_charge_full_design_path_exists = true;
 	test_batt_charge_full_design_path_retval = 3400000;
 	// TODO: Should this be in mA or uA?  Device returns uA but emulator returns mA!
-	g_assert_true((3400000 / 1000) == battery_full40());
+	g_assert_true((3400000 / 1000) == battery_full40(BATTERY_PRIMARY));
+
+	// Out-of-range battery
+	g_assert_true(-1 == battery_full40(battery_count()));
+
+	forget_batteries();
 }
 
 //
 // Tests for the battery_rawcoulomb API method
-// double battery_rawcoulomb(void)
+// double battery_rawcoulomb(int index)
 //
 static void
 test_battery_rawcoulomb(/*api_test_fixture *fixture, gconstpointer unused*/)
 {
 	// Check for failure returned from battery_rawcoulomb (not implemented)
-	g_assert_true(-1 == battery_rawcoulomb());
+	g_assert_true(-1 == battery_rawcoulomb(BATTERY_PRIMARY));
 }
 
 //
 // Tests for the battery_coulomb API method
-// double battery_coulomb(void)
+// double battery_coulomb(int index)
 //
 static void
 test_battery_coulomb(/*api_test_fixture *fixture, gconstpointer unused*/)
 {
-	// Check for failure returned from test_batt_charge_now_path
+	// Out-of-range battery
 	reset_battery_path_retvals();
-	test_batt_charge_now_path_exists = false;
-	test_batt_charge_now_path_retval = 1840000;
-	g_assert_true(-1 == battery_coulomb());
+	g_assert_true(-1 == battery_coulomb(battery_count()));
 
 	// Check for failure returned from test_batt_charge_now_path
 	reset_battery_path_retvals();
 	test_batt_charge_now_path_exists = true;
 	test_batt_charge_now_path_retval = -1;
-	g_assert_true(-1 == battery_coulomb());
+	g_assert_true(-1 == battery_coulomb(BATTERY_PRIMARY));
 
 	// Check for correct return value from test_batt_charge_now_path
 	reset_battery_path_retvals();
 	test_batt_charge_now_path_exists = true;
 	test_batt_charge_now_path_retval = 1840000;
-	g_assert_true((1840000 / 1000) == battery_coulomb());
+	g_assert_true((1840000 / 1000) == battery_coulomb(BATTERY_PRIMARY));
+
+	forget_batteries();
 }
 
 //
 // Tests for the battery_age API method
-// double battery_age(void)
+// double battery_age(int index)
 //
 static void
 test_battery_age(/*api_test_fixture *fixture, gconstpointer unused*/)
 {
 	// Check for failure returned from battery_age (not implemented)
-	g_assert_true(-1 == battery_age());
+	g_assert_true(-1 == battery_age(BATTERY_PRIMARY));
 }
 
 //
 // Tests for the battery_is_present API method
-// bool battery_is_present(void)
+// bool battery_is_present(int index)
 //
 static void
 test_battery_is_present(/*api_test_fixture *fixture, gconstpointer unused*/)
 {
-	// Check for failure returned from test_batt_present_path
+	// Out-of-range battery
+	reset_battery_path_retvals();
+	g_assert_true(false == battery_is_present(battery_count()));
+
+	//
+	// The node itself is gone: a detachable battery that is currently
+	// detached. Answered before any attribute is read, since they would all
+	// fail anyway.
+	//
+	reset_battery_path_retvals();
+	test_batt_sysfs_path_is_dir = false;
+	test_batt_present_path_exists = true;
+	test_batt_present_path_retval = 1;
+	g_assert_true(false == battery_is_present(BATTERY_PRIMARY));
+
+	//
+	// "present" is optional in the power_supply class and a soldered-in cell
+	// has no reason to export it. Its absence must not read as "no battery",
+	// or such a device reports none at all.
+	//
 	reset_battery_path_retvals();
 	test_batt_present_path_exists = false;
 	test_batt_present_path_retval = 0;
-	g_assert_true(false == battery_is_present());
+	g_assert_true(true == battery_is_present(BATTERY_PRIMARY));
 
 	// Check for failure returned from test_batt_present_path
 	reset_battery_path_retvals();
 	test_batt_present_path_exists = true;
 	test_batt_present_path_retval = -1;
-	g_assert_true(false == battery_is_present());
-
+	g_assert_true(false == battery_is_present(BATTERY_PRIMARY));
 
 	// Check for correct return value from test_batt_present_path (battery not present)
 	reset_battery_path_retvals();
 	test_batt_present_path_exists = true;
 	test_batt_present_path_retval = 0;
-	g_assert_true(false == battery_is_present());
+	g_assert_true(false == battery_is_present(BATTERY_PRIMARY));
 
 	// Check for correct return value from test_batt_present_path (battery present)
 	reset_battery_path_retvals();
 	test_batt_present_path_exists = true;
 	test_batt_present_path_retval = 1;
-	g_assert_true(true == battery_is_present());
+	g_assert_true(true == battery_is_present(BATTERY_PRIMARY));
+
+	forget_batteries();
 }
 
 //
@@ -950,6 +1264,152 @@ test_get_battery_ctia_params(/*api_test_fixture *fixture, gconstpointer unused*/
 }
 
 //
+// Tests for detect_battery_sysfs_paths()
+//
+// The primary battery keeps index 0, and anything else the kernel calls a
+// battery follows it. Picking between several by directory order picks at
+// random, which is what this replaced.
+//
+static void
+test_detect_battery_sysfs_paths(void)
+{
+	char *extras[] = { TEST_BATT_NODE, TEST_KBD_NODE, NULL };
+
+	// One battery, found by walking the power_supply class
+	reset_battery_path_retvals();
+	g_assert_true(1 == battery_count());
+	g_assert_cmpstr(battery_name(BATTERY_PRIMARY), ==, TEST_BATT_NODE);
+	g_assert_cmpstr(battery_role(BATTERY_PRIMARY), ==, "main");
+
+	// A second battery: the phone's own plus the one in its keyboard
+	reset_battery_path_retvals();
+	test_find_power_supply_sysfs_paths_retval = extras;
+	detect_battery_sysfs_paths();
+	g_assert_true(2 == battery_count());
+	g_assert_cmpstr(battery_name(BATTERY_PRIMARY), ==, TEST_BATT_NODE);
+	g_assert_cmpstr(battery_role(BATTERY_PRIMARY), ==, "main");
+	g_assert_cmpstr(battery_name(1), ==, TEST_KBD_NODE);
+	g_assert_cmpstr(battery_role(1), ==, "aux");
+
+	// The primary is not listed twice just because the walk finds it too
+	g_assert_true(0 != g_strcmp0(battery_name(BATTERY_PRIMARY), battery_name(1)));
+
+	// Indices outside the list are refused rather than read
+	g_assert_cmpstr(battery_name(-1), ==, "");
+	g_assert_cmpstr(battery_name(battery_count()), ==, "");
+	g_assert_cmpstr(battery_role(-1), ==, "");
+	g_assert_cmpstr(battery_role(battery_count()), ==, "");
+
+	//
+	// Nothing configured and nothing found still leaves one slot: callers
+	// expect a primary to exist, and every read from it fails cleanly.
+	//
+	reset_battery_path_retvals();
+	test_find_power_supply_sysfs_path_retval = NULL;
+	test_find_power_supply_sysfs_paths_retval = NULL;
+	detect_battery_sysfs_paths();
+	g_assert_true(1 == battery_count());
+	g_assert_cmpstr(battery_role(BATTERY_PRIMARY), ==, "main");
+
+	forget_batteries();
+}
+
+//
+// A large pack must not overflow the percentage calculation. energy_now is in
+// microwatt hours, so 100 * now leaves the range of a signed int at about
+// 21.5 Wh, and signed overflow is undefined rather than merely wrong.
+//
+static void
+test_battery_percent_large_pack(void)
+{
+	// 50 Wh, half full: 100 * 25000000 is well past INT_MAX
+	reset_battery_path_retvals();
+	test_batt_energy_now_path_exists = true;
+	test_batt_energy_full_path_exists = true;
+	test_batt_energy_now_path_retval = 25000000;
+	test_batt_energy_full_path_retval = 50000000;
+	g_assert_true(50 == battery_percent(BATTERY_PRIMARY));
+
+	// and at the top of the range
+	reset_battery_path_retvals();
+	test_batt_energy_now_path_exists = true;
+	test_batt_energy_full_path_exists = true;
+	test_batt_energy_now_path_retval = 2000000000;
+	test_batt_energy_full_path_retval = 2000000000;
+	g_assert_true(100 == battery_percent(BATTERY_PRIMARY));
+
+	forget_batteries();
+}
+
+//
+// Tests for the fake ("pseudo") battery mode, which is how an emulated target
+// with no battery of its own is given one to report.
+// void battery_set_fakemode(bool enable)
+// nyx_error_t battery_get_fakemode(bool *enable)
+//
+static void
+test_battery_fakemode(void)
+{
+	bool testEnable;
+
+	//
+	// nyx_utils_read() answers -1 when it cannot open the node, which is the
+	// usual case: pseudo_batt only exists on targets that have it. Treating
+	// that as a successful read ran strstr() over an uninitialised buffer.
+	//
+	reset_battery_path_retvals();
+	test_nyx_utils_read_result = -1;
+	testEnable = true;
+	g_assert_true(NYX_ERROR_NONE != battery_get_fakemode(&testEnable));
+	g_assert_true(true == testEnable);
+
+	// A NULL out-parameter is refused
+	reset_battery_path_retvals();
+	test_nyx_utils_read_result = 0;
+	g_assert_true(NYX_ERROR_NONE != battery_get_fakemode(NULL));
+
+	// "NORMAL" means the real battery is being passed through
+	reset_battery_path_retvals();
+	test_nyx_utils_read_result = 0;
+	g_strlcpy(test_nyx_utils_read_contents, "NORMAL",
+	          sizeof(test_nyx_utils_read_contents));
+	testEnable = true;
+	g_assert_true(NYX_ERROR_NONE == battery_get_fakemode(&testEnable));
+	g_assert_true(false == testEnable);
+
+	// anything else means the pseudo battery is driving
+	reset_battery_path_retvals();
+	test_nyx_utils_read_result = 0;
+	g_strlcpy(test_nyx_utils_read_contents, "PSEUDO 1 100 40 4100 80 1",
+	          sizeof(test_nyx_utils_read_contents));
+	testEnable = false;
+	g_assert_true(NYX_ERROR_NONE == battery_get_fakemode(&testEnable));
+	g_assert_true(true == testEnable);
+
+	//
+	// Only the string is written, not the whole buffer: passing sizeof used
+	// to hand the kernel the uninitialised stack bytes past the terminator.
+	//
+	reset_battery_path_retvals();
+	battery_set_fakemode(true);
+	g_assert_true(strlen(test_nyx_utils_write_buf) == test_nyx_utils_write_size);
+	g_assert_cmpstr(test_nyx_utils_write_buf, ==, "1 1 100 40 4100 80 1");
+
+	reset_battery_path_retvals();
+	battery_set_fakemode(false);
+	g_assert_true(strlen(test_nyx_utils_write_buf) == test_nyx_utils_write_size);
+	g_assert_cmpstr(test_nyx_utils_write_buf, ==, "0 1 100 40 4100 80 1");
+
+	// With no battery in the list there is nothing to write to, and nothing
+	// should be written
+	forget_batteries();
+	test_nyx_utils_write_size = 0;
+	battery_set_fakemode(true);
+	g_assert_true(0 == test_nyx_utils_write_size);
+	g_assert_true(NYX_ERROR_NONE != battery_get_fakemode(&testEnable));
+}
+
+//
 // Set-up GLib, then register and run the tests.
 int main(int argc, char **argv)
 {
@@ -972,6 +1432,11 @@ int main(int argc, char **argv)
 	g_test_add_func("/battery/device/battery_age", test_battery_age);
 
 	g_test_add_func("/battery/device/battery_is_present", test_battery_is_present);
+	g_test_add_func("/battery/device/detect_battery_sysfs_paths",
+	                test_detect_battery_sysfs_paths);
+	g_test_add_func("/battery/device/battery_percent_large_pack",
+	                test_battery_percent_large_pack);
+	g_test_add_func("/battery/device/battery_fakemode", test_battery_fakemode);
 	g_test_add_func("/battery/device/get_battery_ctia_params",
 	                test_get_battery_ctia_params);
 

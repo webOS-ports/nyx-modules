@@ -36,7 +36,10 @@
 
 #include <glib.h>
 
+/* Overridable so a host-side test can point at a fixture instead. */
+#ifndef NYX_CONF_FILE
 #define NYX_CONF_FILE "/etc/nyx.conf"
+#endif
 
 static inline gchar *nyx_conf_get_path(const gchar *group, const gchar *key)
 {
