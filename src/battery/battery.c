@@ -716,8 +716,15 @@ gboolean _handle_event(GIOChannel *channel, GIOCondition condition,
 
 static void battery_cleanup(void)
 {
-	// battery_init sets g_io_channel_set_close_on_unref, and calls g_io_channel_unref.
-	// This leaves one ref associated with the watch, so removing the watch should close the channel.
+	/*
+	 * The udev monitor owns its file descriptor, so the GIOChannel wrapped
+	 * around it must not close it - see battery_init(). Drop the watch first
+	 * so glib stops polling the fd, then let udev_monitor_unref() close it.
+	 *
+	 * This used to drop the monitor pointer without unreffing it, leaking the
+	 * monitor and its ref on the udev context on every deinit, while the
+	 * channel closed a descriptor it did not own.
+	 */
 	if (0 != watch)
 	{
 		g_source_remove(watch);
@@ -726,7 +733,7 @@ static void battery_cleanup(void)
 
 	if (NULL != mon)
 	{
-		udev_monitor_filter_remove(mon);
+		udev_monitor_unref(mon);
 		mon = NULL;
 	}
 
@@ -808,7 +815,13 @@ nyx_error_t battery_init(void)
 
 	/* Remove the ref from g_io_channel_unix_new so we won't leak the channel if g_io_add_watch failed */
 	/* watch holds another ref which is removed in battery_cleanup */
-	g_io_channel_set_close_on_unref(channel, TRUE);
+	/*
+	 * Deliberately not g_io_channel_set_close_on_unref(): the fd belongs to
+	 * the udev monitor, which closes it in battery_cleanup(). Letting the
+	 * channel close it too would close a descriptor number that libudev still
+	 * believes it holds, and that the kernel may already have handed to
+	 * something else.
+	 */
 	g_io_channel_unref(channel);
 
 	if (0 == watch)
