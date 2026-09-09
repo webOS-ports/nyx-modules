@@ -143,15 +143,30 @@ char *find_power_supply_sysfs_path(const char *device_type)
 	gchar *fallback = NULL;
 	const char *sub_dir_name;
 	const char *file_name;
-	char file_contents[64];
-	char base_dir[64] = POWER_SUPPLY_SYSFS_DIR;
+	char file_contents[64] = "";
+	/*
+	 * Point at the literal rather than copying it into a fixed buffer: a
+	 * char[64] initialised from a longer string is truncated without a
+	 * terminator, and POWER_SUPPLY_SYSFS_DIR is overridable so a host-side
+	 * test can aim it at a fixture, which is exactly how it gets long.
+	 */
+	const char *base_dir = POWER_SUPPLY_SYSFS_DIR;
+
+	if (!device_type)
+	{
+		return NULL;
+	}
 
 	dir = g_dir_open(base_dir, 0, &gerror);
 
-	if (gerror)
+	if (gerror || !dir)
 	{
-		nyx_error(MSGID_NYX_MOD_SYSFS_ERR, 0, "error: %s", gerror->message);
-		g_error_free(gerror);
+		if (gerror)
+		{
+			nyx_error(MSGID_NYX_MOD_SYSFS_ERR, 0, "error: %s", gerror->message);
+			g_error_free(gerror);
+		}
+
 		return NULL;
 	}
 
@@ -169,24 +184,47 @@ char *find_power_supply_sysfs_path(const char *device_type)
 		{
 			subdir = g_dir_open(dir_path, 0, &gerror);
 
-			if (gerror)
+			if (gerror || !subdir)
 			{
-				nyx_error(MSGID_NYX_MOD_GET_DIR_ERR, 0, "error: %s", gerror->message);
-				g_error_free(gerror);
+				/*
+				 * One unreadable power_supply is not a reason to give up on
+				 * the rest of them - a supply can be unbound underneath us
+				 * mid-walk. Skip it and keep looking.
+				 */
+				if (gerror)
+				{
+					nyx_error(MSGID_NYX_MOD_GET_DIR_ERR, 0, "error: %s", gerror->message);
+					g_error_free(gerror);
+					gerror = NULL;
+				}
+
 				g_free(dir_path);
-				g_dir_close(dir);
-				return NULL;
+				dir_path = NULL;
+				continue;
 			}
 
 			while ((file_name = g_dir_read_name(subdir)) != 0)
 			{
 				if (strcmp(file_name, "type") == 0)
 				{
+					int type_ok;
+
 					full_path = g_build_filename(dir_path, file_name, NULL);
-					FileGetString(full_path, file_contents, 64);
+					type_ok = FileGetString(full_path, file_contents,
+					                        sizeof(file_contents));
 
 					g_free(full_path);
 					full_path = NULL;
+
+					/*
+					 * An unreadable type tells us nothing about this supply.
+					 * Reading on would compare against an uninitialised
+					 * buffer.
+					 */
+					if (0 != type_ok)
+					{
+						break;
+					}
 
 					/* Exact match, or any USB-family type (USB, USB_PD,
 					 * USB_DCP, USB_CDP, ...) when looking for "USB". Some
@@ -264,12 +302,21 @@ char **find_power_supply_sysfs_paths(const char *device_type)
 	const char *base_dir = POWER_SUPPLY_SYSFS_DIR;
 	GPtrArray *found;
 
+	if (!device_type)
+	{
+		return NULL;
+	}
+
 	dir = g_dir_open(base_dir, 0, &gerror);
 
-	if (gerror)
+	if (gerror || !dir)
 	{
-		nyx_error(MSGID_NYX_MOD_SYSFS_ERR, 0, "error: %s", gerror->message);
-		g_error_free(gerror);
+		if (gerror)
+		{
+			nyx_error(MSGID_NYX_MOD_SYSFS_ERR, 0, "error: %s", gerror->message);
+			g_error_free(gerror);
+		}
+
 		return NULL;
 	}
 
