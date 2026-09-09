@@ -213,14 +213,23 @@ int battery_percent(int index)
 int battery_temperature(int index)
 {
 	battery_device_t *b = battery_at(index);
-	int temp;
+	double temp = 0;
 
-	if (!b || (temp = nyx_utils_read_value(b->temperature_path)) < 0)
+	/*
+	 * temp is signed, and a battery really can be below freezing - a phone
+	 * left in a car overnight reports a negative temperature, and the CTIA
+	 * limits this module publishes exist precisely to stop it charging
+	 * there. nyx_utils_read_value() reports every negative reading as a
+	 * failed read, so the one case the charging logic most needs to see was
+	 * the one it could not. Read it through FileGetDouble() for the same
+	 * reason battery_current() does.
+	 */
+	if (!b || FileGetDouble(b->temperature_path, &temp) < 0)
 	{
 		return -1;
 	}
 
-	return temp;
+	return (int)temp;
 }
 
 /**
