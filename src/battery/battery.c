@@ -163,6 +163,13 @@ int battery_percent(int index)
 
 	// TODO: Might first confirm that battery is present?
 
+	/*
+	 * The ratios below are computed in 64 bits. energy_now is in microwatt
+	 * hours, so 100 * now overflows a signed int for any pack above roughly
+	 * 21.5 Wh - which is most of them once this runs on anything larger than
+	 * a phone - and signed overflow is undefined, not merely wrong.
+	 */
+
 	/* try capacity node first but keep in mind it's not supported by all power class devices */
 	if ((capacity = nyx_utils_read_value(b->capacity_path)) < 0)
 	{
@@ -179,7 +186,7 @@ int battery_percent(int index)
 				return -1;
 			}
 
-			capacity = (100 * now / full);
+			capacity = (int)((gint64) 100 * now / full);
 		}
 		/* as last try we can use charge_now path */
 		else if (g_file_test(b->charge_now_path, G_FILE_TEST_EXISTS))
@@ -194,7 +201,7 @@ int battery_percent(int index)
 				return -1;
 			}
 
-			capacity = (100 * now / full);
+			capacity = (int)((gint64) 100 * now / full);
 		}
 		else
 		{
