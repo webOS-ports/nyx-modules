@@ -861,6 +861,12 @@ void battery_set_wakeup_percent(int percentage)
 	return;
 }
 
+/**
+ * @brief Turn the pseudo battery on or off.
+ *
+ * Still needed: an emulated target (qemux86 and friends) has no battery at
+ * all, and the pseudo_batt node is how it is given one to report.
+ */
 void battery_set_fakemode(bool enable)
 {
 	battery_device_t *b = battery_at(BATTERY_PRIMARY);
@@ -872,7 +878,13 @@ void battery_set_fakemode(bool enable)
 	}
 
 	snprintf(buf, sizeof(buf), "%d %s", enable, "1 100 40 4100 80 1");
-	nyx_utils_write(b->fake_battery_path, buf, sizeof(buf));
+
+	/*
+	 * strlen, not sizeof: nyx_utils_write() writes exactly the number of
+	 * bytes it is given and snprintf() does not pad, so sizeof handed the
+	 * kernel the ten uninitialised stack bytes past the terminator.
+	 */
+	nyx_utils_write(b->fake_battery_path, buf, strlen(buf));
 
 	return;
 }
@@ -880,21 +892,26 @@ void battery_set_fakemode(bool enable)
 nyx_error_t battery_get_fakemode(bool *enable)
 {
 	battery_device_t *b = battery_at(BATTERY_PRIMARY);
-	char buf[32];
+	char buf[32] = "";
 
 	if (enable == NULL || b == NULL)
 	{
 		return NYX_ERROR_INVALID_VALUE;
 	}
 
-	if (nyx_utils_read(b->fake_battery_path, buf, sizeof(buf)))
-	{
-		*enable = strstr(buf, "NORMAL") == 0;
-	}
-	else
+	/*
+	 * nyx_utils_read() returns the byte count, or -1 if it could not even
+	 * open the node - which is the normal case, since pseudo_batt only
+	 * exists on targets that have it. Testing for truth took that -1 as
+	 * success and ran strstr() over an uninitialised buffer.
+	 */
+	if (nyx_utils_read(b->fake_battery_path, buf, sizeof(buf)) <= 0)
 	{
 		return NYX_ERROR_INVALID_VALUE;
 	}
+
+	/* The node reports "NORMAL" when it is passing the real battery through. */
+	*enable = (NULL == strstr(buf, "NORMAL"));
 
 	return NYX_ERROR_NONE;
 }
