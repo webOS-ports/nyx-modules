@@ -59,7 +59,7 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
 		return NYX_ERROR_TOO_MANY_OPENS;
 	}
 
-	nyxDev = (nyx_device_t *)calloc(sizeof(nyx_device_t), 1);
+	nyxDev = (nyx_device_t *)calloc(1, sizeof(nyx_device_t));
 
 	if (NULL == nyxDev)
 	{
