@@ -103,6 +103,15 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
 	                           NYX_BATTERY_QUERY_BATTERY_INFO_MODULE_METHOD,
 	                           "battery_query_battery_info");
 
+	/*
+	 * Whatever a previous open left behind is not ours. The callback and its
+	 * context belong to the client that registered them; carrying them across
+	 * an open means the next udev event hands a freed context back to a
+	 * client that has already gone away.
+	 */
+	battery_callback = NULL;
+	battery_callback_context = NULL;
+
 	nyx_error_t result = battery_init();
 
 	if (NYX_ERROR_NONE != result)
@@ -127,6 +136,15 @@ nyx_error_t nyx_module_close(nyx_device_t *d)
 	if (NULL != nyxDev)
 	{
 		result = battery_deinit();
+
+		/*
+		 * Forget the client's callback along with its context: the context is
+		 * the client's memory and it is entitled to free it once it has
+		 * closed the device.
+		 */
+		battery_callback = NULL;
+		battery_callback_context = NULL;
+
 		free(nyxDev);
 		nyxDev = NULL;
 	}
