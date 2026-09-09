@@ -57,6 +57,8 @@
 #define nyx_debug(m, args...) {}
 #undef nyx_error
 #define nyx_error(m, args...) {}
+#undef nyx_warn
+#define nyx_warn(m, args...) {}
 
 // As we never actually call into nyx-lib, our nyx-lib instance
 // can be anything we want it to be.
@@ -99,54 +101,85 @@ double test_battery_coulomb_retval = 748.800;
 double test_battery_age_retval = 99.21875;
 bool test_battery_is_present_retval = true;
 
-// Mock the battery.c functions (from battery_read.h)
-int battery_percent(void)
+//
+// The readings are taken per battery now, so every mock takes the index and
+// the fixture pretends to have two: index 0 the built-in one and index 1 a
+// detached keyboard, which is how a caller sees a battery that is in the list
+// but not present.
+//
+#define TEST_BATTERY_COUNT 2
+#define TEST_BATTERY_ABSENT 1
+
+int test_battery_count_retval = TEST_BATTERY_COUNT;
+
+// Mock the battery.c functions (from battery.h)
+int battery_count(void)
+{
+	return test_battery_count_retval;
+}
+
+const char *battery_name(int index)
+{
+	return (0 == index) ? "battery" : "keyboard-battery";
+}
+
+const char *battery_role(int index)
+{
+	return (0 == index) ? "main" : "keyboard";
+}
+
+int battery_percent(int index)
 {
 	return test_battery_percent_retval;
 }
 
-int battery_temperature(void)
+int battery_temperature(int index)
 {
 	return test_battery_temperature_retval;
 }
 
-int battery_voltage(void)
+int battery_voltage(int index)
 {
 	return test_battery_voltage_retval;
 }
 
-int battery_current(void)
+int battery_current(int index)
 {
 	return test_battery_current_retval;
 }
 
-int battery_avg_current(void)
+int battery_avg_current(int index)
 {
 	return test_battery_avg_current_retval;
 }
 
-double battery_full40(void)
+double battery_full40(int index)
 {
 	return test_battery_full40_retval;
 }
 
-double battery_rawcoulomb(void)
+double battery_rawcoulomb(int index)
 {
 	return test_battery_rawcoulomb_retval;
 }
 
-double battery_coulomb(void)
+double battery_coulomb(int index)
 {
 	return test_battery_coulomb_retval;
 }
 
-double battery_age(void)
+double battery_age(int index)
 {
 	return test_battery_age_retval;
 }
 
-bool battery_is_present(void)
+bool battery_is_present(int index)
 {
+	if (TEST_BATTERY_ABSENT == index)
+	{
+		return false;
+	}
+
 	return test_battery_is_present_retval;
 }
 
@@ -165,6 +198,34 @@ bool battery_authenticate(void)
 void battery_set_wakeup_percent(int percentage)
 {
 	return;
+}
+
+//
+// Fake ("pseudo") battery mode. Emulated targets have no battery at all and
+// this is how they are given one, so it is a supported path, not dead code.
+//
+bool test_battery_fakemode = false;
+nyx_error_t test_battery_get_fakemode_retval = NYX_ERROR_NONE;
+
+void battery_set_fakemode(bool enable)
+{
+	test_battery_fakemode = enable;
+}
+
+nyx_error_t battery_get_fakemode(bool *enable)
+{
+	if (NYX_ERROR_NONE != test_battery_get_fakemode_retval)
+	{
+		return test_battery_get_fakemode_retval;
+	}
+
+	if (NULL == enable)
+	{
+		return NYX_ERROR_INVALID_VALUE;
+	}
+
+	*enable = test_battery_fakemode;
+	return NYX_ERROR_NONE;
 }
 
 #define CHARGE_MIN_TEMPERATURE_C 0
@@ -475,6 +536,163 @@ static void test_battery_set_wakeup_percentage(api_test_fixture *fixture,
 
 
 //
+// Test for the battery_query_battery_count API
+// nyx_error_t battery_query_battery_count(nyx_device_handle_t handle, int32_t *count)
+//
+static void test_battery_query_battery_count(api_test_fixture *fixture,
+        gconstpointer unused)
+{
+	int32_t testCount;
+
+	// Force a failed call
+	testCount = -1;
+	g_assert_true(NYX_ERROR_INVALID_HANDLE == battery_query_battery_count(NULL,
+	              &testCount));
+
+	// Force another failed call
+	g_assert_true(NYX_ERROR_INVALID_VALUE == battery_query_battery_count(
+	                  fixture->fixture_device, NULL));
+
+	// Check for no error
+	testCount = -1;
+	g_assert_true(NYX_ERROR_NONE == battery_query_battery_count(
+	                  fixture->fixture_device, &testCount));
+	g_assert_true(TEST_BATTERY_COUNT == testCount);
+
+	// A detached battery keeps its slot, so the count does not shrink when one
+	// goes away - that is the whole point of reporting it as not present.
+	g_assert_true(false == battery_is_present(TEST_BATTERY_ABSENT));
+	g_assert_true(NYX_ERROR_NONE == battery_query_battery_count(
+	                  fixture->fixture_device, &testCount));
+	g_assert_true(TEST_BATTERY_COUNT == testCount);
+}
+
+//
+// Test for the battery_query_battery_info API
+// nyx_error_t battery_query_battery_info(nyx_device_handle_t handle, int32_t index, nyx_battery_info_t *info)
+//
+static void test_battery_query_battery_info(api_test_fixture *fixture,
+        gconstpointer unused)
+{
+	nyx_battery_info_t testInfo;
+
+	// Force a failed call
+	g_assert_true(NYX_ERROR_INVALID_HANDLE == battery_query_battery_info(NULL, 0,
+	              &testInfo));
+
+	// Force another failed call
+	g_assert_true(NYX_ERROR_INVALID_VALUE == battery_query_battery_info(
+	                  fixture->fixture_device, 0, NULL));
+
+	// Indices outside the list are rejected rather than read
+	g_assert_true(NYX_ERROR_VALUE_OUT_OF_RANGE == battery_query_battery_info(
+	                  fixture->fixture_device, -1, &testInfo));
+	g_assert_true(NYX_ERROR_VALUE_OUT_OF_RANGE == battery_query_battery_info(
+	                  fixture->fixture_device, TEST_BATTERY_COUNT, &testInfo));
+	g_assert_true(NYX_ERROR_VALUE_OUT_OF_RANGE == battery_query_battery_info(
+	                  fixture->fixture_device, G_MAXINT32, &testInfo));
+
+	// The primary battery, which reports what battery_query_battery_status does
+	memset(&testInfo, 0xff, sizeof(testInfo));
+	g_assert_true(NYX_ERROR_NONE == battery_query_battery_info(
+	                  fixture->fixture_device, BATTERY_PRIMARY, &testInfo));
+	g_assert_cmpstr(testInfo.name, ==, battery_name(BATTERY_PRIMARY));
+	g_assert_cmpstr(testInfo.role, ==, battery_role(BATTERY_PRIMARY));
+	g_assert_true(true == testInfo.primary);
+	g_assert_true(true == testInfo.status.present);
+	g_assert_true(test_battery_percent_retval == testInfo.status.percentage);
+
+	// The detached one: in the list, reported as not present, and with no
+	// stale readings left in the struct behind that flag.
+	memset(&testInfo, 0xff, sizeof(testInfo));
+	g_assert_true(NYX_ERROR_NONE == battery_query_battery_info(
+	                  fixture->fixture_device, TEST_BATTERY_ABSENT, &testInfo));
+	g_assert_cmpstr(testInfo.name, ==, battery_name(TEST_BATTERY_ABSENT));
+	g_assert_cmpstr(testInfo.role, ==, battery_role(TEST_BATTERY_ABSENT));
+	g_assert_false(testInfo.primary);
+	g_assert_false(testInfo.status.present);
+	g_assert_false(testInfo.status.charging);
+	g_assert_true(0 == testInfo.status.percentage);
+	g_assert_true(0 == testInfo.status.voltage);
+}
+
+//
+// Test for the battery fake-mode APIs, which is how an emulated target with no
+// battery at all is given one.
+// nyx_error_t battery_set_fake_mode(nyx_device_handle_t handle, bool enable)
+// nyx_error_t battery_get_fake_mode(nyx_device_handle_t handle, bool *enable)
+//
+static void test_battery_fake_mode(api_test_fixture *fixture,
+                                   gconstpointer unused)
+{
+	bool testEnable;
+
+	// Force failed calls
+	g_assert_true(NYX_ERROR_INVALID_HANDLE == battery_set_fake_mode(NULL, true));
+	g_assert_true(NYX_ERROR_INVALID_HANDLE == battery_get_fake_mode(NULL,
+	              &testEnable));
+
+	test_battery_get_fakemode_retval = NYX_ERROR_NONE;
+	g_assert_true(NYX_ERROR_INVALID_VALUE == battery_get_fake_mode(
+	                  fixture->fixture_device, NULL));
+
+	// A node that cannot be read is an error, not a silent "not faking": the
+	// out-parameter must not be touched on that path.
+	testEnable = true;
+	test_battery_get_fakemode_retval = NYX_ERROR_INVALID_VALUE;
+	g_assert_true(NYX_ERROR_NONE != battery_get_fake_mode(fixture->fixture_device,
+	              &testEnable));
+	g_assert_true(true == testEnable);
+	test_battery_get_fakemode_retval = NYX_ERROR_NONE;
+
+	// Round-trip both ways
+	g_assert_true(NYX_ERROR_NONE == battery_set_fake_mode(fixture->fixture_device,
+	              true));
+	testEnable = false;
+	g_assert_true(NYX_ERROR_NONE == battery_get_fake_mode(fixture->fixture_device,
+	              &testEnable));
+	g_assert_true(true == testEnable);
+
+	g_assert_true(NYX_ERROR_NONE == battery_set_fake_mode(fixture->fixture_device,
+	              false));
+	testEnable = true;
+	g_assert_true(NYX_ERROR_NONE == battery_get_fake_mode(fixture->fixture_device,
+	              &testEnable));
+	g_assert_true(false == testEnable);
+}
+
+//
+// Closing the device must forget the client's callback along with its context.
+// Keeping them would hand a freed context to a client that has gone away the
+// next time a udev event arrives.
+//
+static void test_callback_cleared_on_close()
+{
+	nyx_device_t *test_device = NULL;
+	int context = 0;
+
+	nyxDev = (nyx_device_t *) NULL;
+	testBatteryInit_retval = NYX_ERROR_NONE;
+	g_assert_true(nyx_module_open(the_instance, &test_device) == NYX_ERROR_NONE);
+
+	g_assert_true(NYX_ERROR_NONE == battery_register_battery_status_callback(
+	                  test_device, test_nyx_device_callback_function, &context));
+	g_assert_nonnull(battery_callback);
+	g_assert_true(&context == battery_callback_context);
+
+	g_assert_true(nyx_module_close(test_device) == NYX_ERROR_NONE);
+	g_assert_null(battery_callback);
+	g_assert_null(battery_callback_context);
+
+	// ... and a fresh open does not resurrect them either
+	test_device = NULL;
+	g_assert_true(nyx_module_open(the_instance, &test_device) == NYX_ERROR_NONE);
+	g_assert_null(battery_callback);
+	g_assert_null(battery_callback_context);
+	g_assert_true(nyx_module_close(test_device) == NYX_ERROR_NONE);
+}
+
+//
 // Set-up GLib, then register and run the tests.
 int main(int argc, char **argv)
 {
@@ -491,6 +709,13 @@ int main(int argc, char **argv)
 	            test_battery_get_ctia_parameters);
 	ADD_APITEST("/battery/api/battery_set_wakeup_percentage",
 	            test_battery_set_wakeup_percentage);
+	ADD_APITEST("/battery/api/battery_query_battery_count",
+	            test_battery_query_battery_count);
+	ADD_APITEST("/battery/api/battery_query_battery_info",
+	            test_battery_query_battery_info);
+	ADD_APITEST("/battery/api/battery_fake_mode", test_battery_fake_mode);
+	g_test_add_func("/battery/api/callback_cleared_on_close",
+	                test_callback_cleared_on_close);
 
 	return g_test_run();
 }
