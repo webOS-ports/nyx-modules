@@ -250,7 +250,7 @@ int battery_voltage(int index)
 int battery_current(int index)
 {
 	battery_device_t *b = battery_at(index);
-	double current;
+	double current = 0;
 
 	/*
 	 * The Linux power_supply class exports current_now as a *signed*

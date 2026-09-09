@@ -76,13 +76,23 @@ int FileGetString(const char *path, char *ret_string, size_t maxlen)
 	return 0;
 }
 
+/**
+ * Parse a number out of a file.
+ *
+ * Returns 0 and stores the value only when a number was actually parsed; -1
+ * otherwise, leaving *ret_data alone. Reporting success on an unparseable file
+ * used to leave callers reading whatever their uninitialised out-parameter
+ * happened to hold - battery_current() returned stack garbage for an empty
+ * current_now, and a positive one reads as "charging".
+ */
 int FileGetDouble(const char *path, double *ret_data)
 {
 	GError *gerror = NULL;
 	char *contents = NULL;
 	char *endptr;
 	gsize len;
-	float val;
+	double val;
+	int ret = -1;
 
 	if (!path || !g_file_get_contents(path, &contents, &len, &gerror))
 	{
@@ -95,6 +105,7 @@ int FileGetDouble(const char *path, double *ret_data)
 		return -1;
 	}
 
+	errno = 0;
 	val = strtod(contents, &endptr);
 
 	if (endptr == contents)
@@ -103,14 +114,22 @@ int FileGetDouble(const char *path, double *ret_data)
 		goto end;
 	}
 
+	if (ERANGE == errno)
+	{
+		nyx_error(MSGID_NYX_MOD_GET_STRTOD_ERR, 0, "Value out of range in %s.", path);
+		goto end;
+	}
+
 	if (ret_data)
 	{
 		*ret_data = val;
 	}
 
+	ret = 0;
+
 end:
 	g_free(contents);
-	return 0;
+	return ret;
 }
 
 char *find_power_supply_sysfs_path(const char *device_type)
