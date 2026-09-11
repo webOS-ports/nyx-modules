@@ -967,11 +967,32 @@ test_battery_temperature(/*api_test_fixture *fixture, gconstpointer unused*/)
 	test_FileGetDouble_temp_result = -1;
 	g_assert_true(-1 == battery_temperature(BATTERY_PRIMARY));
 
-	// Check for correct return value from test_batt_temperature_path
+	//
+	// temp is in tenths of a degree Celsius, and battery_temperature()
+	// answers in whole degrees - which is what "temperature_C" and the
+	// CTIA limits in battery.c have always meant by it.
+	//
 	reset_battery_path_retvals();
 	test_FileGetDouble_temp_result = 0;
 	test_FileGetDouble_temp_retval = 333;
-	g_assert_true(333 == battery_temperature(BATTERY_PRIMARY));
+	g_assert_true(33 == battery_temperature(BATTERY_PRIMARY));
+
+	// Rounded, not truncated
+	reset_battery_path_retvals();
+	test_FileGetDouble_temp_result = 0;
+	test_FileGetDouble_temp_retval = 296;
+	g_assert_true(30 == battery_temperature(BATTERY_PRIMARY));
+
+	// A battery at the CTIA shutdown limit, and one just under it
+	reset_battery_path_retvals();
+	test_FileGetDouble_temp_result = 0;
+	test_FileGetDouble_temp_retval = 600;
+	g_assert_true(60 == battery_temperature(BATTERY_PRIMARY));
+
+	reset_battery_path_retvals();
+	test_FileGetDouble_temp_result = 0;
+	test_FileGetDouble_temp_retval = 594;
+	g_assert_true(59 == battery_temperature(BATTERY_PRIMARY));
 
 	//
 	// A battery below freezing - a phone left in a car overnight. Reading
@@ -982,12 +1003,18 @@ test_battery_temperature(/*api_test_fixture *fixture, gconstpointer unused*/)
 	reset_battery_path_retvals();
 	test_FileGetDouble_temp_result = 0;
 	test_FileGetDouble_temp_retval = -50;
-	g_assert_true(-50 == battery_temperature(BATTERY_PRIMARY));
+	g_assert_true(-5 == battery_temperature(BATTERY_PRIMARY));
 
 	reset_battery_path_retvals();
 	test_FileGetDouble_temp_result = 0;
 	test_FileGetDouble_temp_retval = -200;
-	g_assert_true(-200 == battery_temperature(BATTERY_PRIMARY));
+	g_assert_true(-20 == battery_temperature(BATTERY_PRIMARY));
+
+	// Rounding must not make a freezing battery look warmer than it is
+	reset_battery_path_retvals();
+	test_FileGetDouble_temp_result = 0;
+	test_FileGetDouble_temp_retval = -55;
+	g_assert_true(-6 == battery_temperature(BATTERY_PRIMARY));
 
 	// Zero is a real reading, not an absent one
 	reset_battery_path_retvals();
@@ -1015,12 +1042,23 @@ test_battery_voltage(/*api_test_fixture *fixture, gconstpointer unused*/)
 	test_batt_voltage_path_retval = -1;
 	g_assert_true(-1 == battery_voltage(BATTERY_PRIMARY));
 
-	// Check for correct return value from test_batt_voltage_path
-	// TODO: Should this be in mV or uV?  Device returns uV but emulator returns mV!
+	//
+	// voltage_now is in microvolts and battery_voltage() answers in
+	// millivolts, which is what batteryd publishes it as. The question the
+	// TODO here used to ask - mV or uV, because "the emulator returns mV" -
+	// is settled by the kernel's power_supply ABI: microvolts. A driver
+	// that reports millivolts is out of spec.
+	//
 	reset_battery_path_retvals();
 	test_batt_voltage_path_exists = true;
 	test_batt_voltage_path_retval = 3995000;
-	g_assert_true(3995000 == battery_voltage(BATTERY_PRIMARY));
+	g_assert_true(3995 == battery_voltage(BATTERY_PRIMARY));
+
+	// A cell at the low end of its range
+	reset_battery_path_retvals();
+	test_batt_voltage_path_exists = true;
+	test_batt_voltage_path_retval = 3400000;
+	g_assert_true(3400 == battery_voltage(BATTERY_PRIMARY));
 
 	forget_batteries();
 }
@@ -1045,8 +1083,12 @@ test_battery_current(/*api_test_fixture *fixture, gconstpointer unused*/)
 	reset_battery_path_retvals();
 	test_FileGetDouble_result = 0;
 	test_FileGetDouble_retval = 371870;
-	// TODO: Should this be in mA or uA?  Device returns uA but emulator returns mA!
-	g_assert_true(371870 == battery_current(BATTERY_PRIMARY));
+	//
+	// current_now is in microamps and battery_current() answers in
+	// milliamps, matching batteryd's "current_mA". Same ABI question as
+	// the voltage above, same answer.
+	//
+	g_assert_true(371 == battery_current(BATTERY_PRIMARY));
 
 	//
 	// current_now is signed: negative means discharging. Reading it through
@@ -1056,7 +1098,14 @@ test_battery_current(/*api_test_fixture *fixture, gconstpointer unused*/)
 	reset_battery_path_retvals();
 	test_FileGetDouble_result = 0;
 	test_FileGetDouble_retval = -1543000;
-	g_assert_true(-1543000 == battery_current(BATTERY_PRIMARY));
+	g_assert_true(-1543 == battery_current(BATTERY_PRIMARY));
+
+	// Truncation toward zero on both sides: a current under a milliamp is
+	// reported as none rather than rounding away from zero.
+	reset_battery_path_retvals();
+	test_FileGetDouble_result = 0;
+	test_FileGetDouble_retval = -600;
+	g_assert_true(0 == battery_current(BATTERY_PRIMARY));
 
 	// A parse failure must not be reported as a reading. FileGetDouble()
 	// used to return success without storing anything, leaving the caller
@@ -1084,8 +1133,8 @@ test_battery_avg_current(/*api_test_fixture *fixture, gconstpointer unused*/)
 	reset_battery_path_retvals();
 	test_FileGetDouble_result = 0;
 	test_FileGetDouble_retval = 371870;
-	// TODO: Should this be in mA or uA?  Device returns uA but emulator returns mA!
-	g_assert_true(371870 == battery_avg_current(BATTERY_PRIMARY));
+	// Milliamps, like battery_current() it delegates to
+	g_assert_true(371 == battery_avg_current(BATTERY_PRIMARY));
 	g_assert_true(battery_current(BATTERY_PRIMARY) == battery_avg_current(
 	                  BATTERY_PRIMARY));
 

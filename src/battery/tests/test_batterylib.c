@@ -91,10 +91,12 @@ nyx_error_t nyx_module_register_method(nyx_instance_t instance,
 
 // default test return values
 int test_battery_percent_retval = 66;
+// What the battery.c readers below stand in for hand back: degrees, mV and
+// mA, not the raw microvolts and microamps their sysfs nodes carry.
 int test_battery_temperature_retval = 38;
-int test_battery_voltage_retval = 3928400;
-int test_battery_current_retval = 85703;
-int test_battery_avg_current_retval = 85703;
+int test_battery_voltage_retval = 3928;
+int test_battery_current_retval = 85;
+int test_battery_avg_current_retval = 85;
 double test_battery_full40_retval = 1150.000;
 double test_battery_rawcoulomb_retval = 761.250;
 double test_battery_coulomb_retval = 748.800;

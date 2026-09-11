@@ -252,7 +252,18 @@ int battery_temperature(int index)
 		return -1;
 	}
 
-	return (int)temp;
+	/*
+	 * The power_supply class exports temp in tenths of a degree Celsius,
+	 * so 293 is 29.3 degrees. Everything that consumes this treats it as
+	 * whole degrees: batteryd publishes it as "temperature_C", and the
+	 * CTIA limits a few lines up in this file - 0, 57 and 60 - are plainly
+	 * degrees. Left unconverted, an ordinary 30 degree battery read as 300
+	 * and sat permanently above every one of them.
+	 *
+	 * Rounded rather than truncated so that a battery below freezing does
+	 * not come out warmer than it is: -5.5 degrees is -6, not -5.
+	 */
+	return (int)((temp < 0) ? (temp / 10.0 - 0.5) : (temp / 10.0 + 0.5));
 }
 
 /**
@@ -271,7 +282,22 @@ int battery_voltage(int index)
 		return -1;
 	}
 
-	return voltage;
+	/*
+	 * voltage_now is in microvolts. batteryd publishes this as
+	 * "voltage_mV", and battery_coulomb() and battery_full40() below
+	 * already divide their own microamp-hour readings down for exactly the
+	 * same reason - these three simply never got the same treatment, so a
+	 * 3.84 V cell was reported as 3843000 mV.
+	 *
+	 * The old test here asked "should this be in mV or uV? Device returns
+	 * uV but emulator returns mV". The kernel's power_supply ABI settles
+	 * it: voltage_now is microvolts. A driver reporting millivolts is out
+	 * of spec, and is a bug in that driver rather than something to guess
+	 * at here - magnitude cannot be used to tell them apart for current or
+	 * temperature, so guessing for one of the three and not the others
+	 * would be worse than being consistent.
+	 */
+	return voltage / 1000;
 }
 
 /**
@@ -302,7 +328,11 @@ int battery_current(int index)
 		return -1;
 	}
 
-	return (int)current;
+	/* Microamps, for the same reason as the voltage above: batteryd
+	 * publishes it as "current_mA". Signed, so this truncates toward zero
+	 * on both sides, which is what dropping sub-milliamp precision should
+	 * do. */
+	return (int)(current / 1000.0);
 }
 
 /**
