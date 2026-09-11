@@ -114,12 +114,26 @@ nyx_device_callback_function_t battery_callback = &test_battery_callback;
 //
 #define TEST_BATT_NODE "Battery"
 #define TEST_KBD_NODE "Keyboard"
+// A fuel gauge sitting beside the battery as its own power_supply, which is
+// where a Qualcomm board keeps charge_full_design.
+#define TEST_BMS_NODE "BMS"
 
 // mock out calls to nyx-modules: utils.c
 char *test_find_power_supply_sysfs_path_retval = TEST_BATT_NODE;
+// NULL means "this board has no BMS supply", which is the common case.
+char *test_find_power_supply_bms_retval = NULL;
 
 char *find_power_supply_sysfs_path(const char *device_type)
 {
+	// Asked for by type, and the module asks for two different ones, so the
+	// mock has to tell them apart rather than answering "Battery" to
+	// everything.
+	if (device_type && 0 == g_strcmp0(device_type, "BMS"))
+	{
+		return test_find_power_supply_bms_retval
+		       ? g_strdup(test_find_power_supply_bms_retval) : NULL;
+	}
+
 	if (!test_find_power_supply_sysfs_path_retval)
 	{
 		return NULL;
@@ -143,6 +157,11 @@ char **find_power_supply_sysfs_paths(const char *device_type)
 	return g_strdupv(test_find_power_supply_sysfs_paths_retval);
 }
 
+// Only the battery's "health" attribute is mocked with contents; every other
+// path still reads as absent, as it did before there was anything to return.
+char test_FileGetString_health[64] = "";
+int32_t test_FileGetString_health_retval = -1;
+
 int FileGetString(const char *path, char *ret_string, size_t maxlen)
 {
 	if (ret_string && maxlen > 0)
@@ -150,7 +169,18 @@ int FileGetString(const char *path, char *ret_string, size_t maxlen)
 		ret_string[0] = '\0';
 	}
 
-	return -1;
+	if (0 != g_strcmp0(path, "Battery/health") ||
+	        test_FileGetString_health_retval < 0)
+	{
+		return -1;
+	}
+
+	if (ret_string && maxlen > 0)
+	{
+		g_strlcpy(ret_string, test_FileGetString_health, maxlen);
+	}
+
+	return 0;
 }
 
 // define paths used in detect_battery_sysfs_paths() in battery.c
@@ -161,6 +191,14 @@ static char *test_batt_energy_full_path = "Battery/energy_full";
 static char *test_batt_energy_full_design_path = "Battery/energy_full_design";
 static char *test_batt_charge_now_path = "Battery/charge_now";
 static char *test_batt_charge_counter_path = "Battery/charge_counter";
+static char *test_batt_health_path = "Battery/health";
+// The keyboard battery is only ever counted and named, but every battery
+// gets its paths resolved, and resolving them asks whether the two
+// full-capacity attributes are there.
+static char *test_kbd_charge_full_path = "Keyboard/charge_full";
+static char *test_kbd_charge_full_design_path = "Keyboard/charge_full_design";
+static char *test_bms_charge_full_path = "BMS/charge_full";
+static char *test_bms_charge_full_design_path = "BMS/charge_full_design";
 static char *test_batt_charge_full_path = "Battery/charge_full";
 static char *test_batt_charge_full_design_path = "Battery/charge_full_design";
 static char *test_batt_temperature_path = "Battery/temp";
@@ -213,6 +251,10 @@ int32_t test_batt_energy_full_path_retval = 0;
 int32_t test_batt_energy_full_design_path_retval = 0;
 int32_t test_batt_charge_now_path_retval = 0;
 int32_t test_batt_charge_counter_path_retval = 0;
+int32_t test_kbd_charge_full_path_retval = 0;
+int32_t test_kbd_charge_full_design_path_retval = 0;
+int32_t test_bms_charge_full_path_retval = 0;
+int32_t test_bms_charge_full_design_path_retval = 0;
 int32_t test_batt_charge_full_path_retval = 0;
 int32_t test_batt_charge_full_design_path_retval = 0;
 int32_t test_batt_temperature_path_retval = 0;
@@ -245,6 +287,35 @@ int32_t nyx_utils_read_value(char *path)
 											else ifMatchReturnRetvalForTestPath(test_batt_current_path)
 												else ifMatchReturnRetvalForTestPath(test_batt_present_path)
 													else ifMatchReturnRetvalForTestPath(test_batt_fake_battery_path)
+														else ifMatchReturnRetvalForTestPath(test_kbd_charge_full_path)
+															else ifMatchReturnRetvalForTestPath(test_kbd_charge_full_design_path)
+																else ifMatchReturnRetvalForTestPath(test_bms_charge_full_path)
+																	else ifMatchReturnRetvalForTestPath(test_bms_charge_full_design_path)
+			else ifMatchReturnRetvalForTestPath(test_batt_energy_full_path)
+				else ifMatchReturnRetvalForTestPath(test_batt_energy_full_design_path)
+					else ifMatchReturnRetvalForTestPath(test_batt_charge_now_path)
+						else ifMatchReturnRetvalForTestPath(test_batt_charge_counter_path)
+							else ifMatchReturnRetvalForTestPath(test_batt_charge_full_path)
+								else ifMatchReturnRetvalForTestPath(test_batt_charge_full_design_path)
+									else ifMatchReturnRetvalForTestPath(test_batt_temperature_path)
+										else ifMatchReturnRetvalForTestPath(test_batt_voltage_path)
+											else ifMatchReturnRetvalForTestPath(test_batt_current_path)
+												else ifMatchReturnRetvalForTestPath(test_batt_present_path)
+													else ifMatchReturnRetvalForTestPath(test_batt_fake_battery_path)
+														else ifMatchReturnRetvalForTestPath(test_bms_charge_full_path)
+															else ifMatchReturnRetvalForTestPath(test_bms_charge_full_design_path)
+			else ifMatchReturnRetvalForTestPath(test_batt_energy_full_path)
+				else ifMatchReturnRetvalForTestPath(test_batt_energy_full_design_path)
+					else ifMatchReturnRetvalForTestPath(test_batt_charge_now_path)
+						else ifMatchReturnRetvalForTestPath(test_batt_charge_counter_path)
+							else ifMatchReturnRetvalForTestPath(test_batt_charge_full_path)
+								else ifMatchReturnRetvalForTestPath(test_batt_charge_full_design_path)
+									else ifMatchReturnRetvalForTestPath(test_batt_temperature_path)
+										else ifMatchReturnRetvalForTestPath(test_batt_voltage_path)
+											else ifMatchReturnRetvalForTestPath(test_batt_current_path)
+												else ifMatchReturnRetvalForTestPath(test_batt_present_path)
+													else ifMatchReturnRetvalForTestPath(test_batt_fake_battery_path)
+														else ifMatchReturnRetvalForTestPath(test_bms_charge_full_design_path)
 
 												// bad path: print error, force g_assert, and return -1
 												fprintf(stderr, "Bad path (%s) passed to nyx_utils_read_value\n", path);
@@ -461,6 +532,11 @@ int32_t test_batt_energy_full_path_exists = false;
 int32_t test_batt_energy_full_design_path_exists = false;
 int32_t test_batt_charge_now_path_exists = false;
 int32_t test_batt_charge_counter_path_exists = false;
+int32_t test_batt_health_path_exists = false;
+int32_t test_kbd_charge_full_path_exists = false;
+int32_t test_kbd_charge_full_design_path_exists = false;
+int32_t test_bms_charge_full_path_exists = false;
+int32_t test_bms_charge_full_design_path_exists = false;
 int32_t test_batt_charge_full_path_exists = false;
 int32_t test_batt_charge_full_design_path_exists = false;
 int32_t test_batt_temperature_path_exists = false;
@@ -520,6 +596,54 @@ gboolean g_file_test(const gchar *path, GFileTest test)
 											else ifMatchReturnExistsForTestPath(test_batt_current_path)
 												else ifMatchReturnExistsForTestPath(test_batt_present_path)
 													else ifMatchReturnExistsForTestPath(test_batt_fake_battery_path)
+														else ifMatchReturnExistsForTestPath(test_batt_health_path)
+															else ifMatchReturnExistsForTestPath(test_kbd_charge_full_path)
+																else ifMatchReturnExistsForTestPath(test_kbd_charge_full_design_path)
+																	else ifMatchReturnExistsForTestPath(test_bms_charge_full_path)
+																		else ifMatchReturnExistsForTestPath(test_bms_charge_full_design_path)
+			else ifMatchReturnExistsForTestPath(test_batt_energy_full_path)
+				else ifMatchReturnExistsForTestPath(test_batt_energy_full_design_path)
+					else ifMatchReturnExistsForTestPath(test_batt_charge_now_path)
+						else ifMatchReturnExistsForTestPath(test_batt_charge_counter_path)
+							else ifMatchReturnExistsForTestPath(test_batt_charge_full_path)
+								else ifMatchReturnExistsForTestPath(test_batt_charge_full_design_path)
+									else ifMatchReturnExistsForTestPath(test_batt_temperature_path)
+										else ifMatchReturnExistsForTestPath(test_batt_voltage_path)
+											else ifMatchReturnExistsForTestPath(test_batt_current_path)
+												else ifMatchReturnExistsForTestPath(test_batt_present_path)
+													else ifMatchReturnExistsForTestPath(test_batt_fake_battery_path)
+														else ifMatchReturnExistsForTestPath(test_batt_health_path)
+															else ifMatchReturnExistsForTestPath(test_bms_charge_full_path)
+																else ifMatchReturnExistsForTestPath(test_bms_charge_full_design_path)
+			else ifMatchReturnExistsForTestPath(test_batt_energy_full_path)
+				else ifMatchReturnExistsForTestPath(test_batt_energy_full_design_path)
+					else ifMatchReturnExistsForTestPath(test_batt_charge_now_path)
+						else ifMatchReturnExistsForTestPath(test_batt_charge_counter_path)
+							else ifMatchReturnExistsForTestPath(test_batt_charge_full_path)
+								else ifMatchReturnExistsForTestPath(test_batt_charge_full_design_path)
+									else ifMatchReturnExistsForTestPath(test_batt_temperature_path)
+										else ifMatchReturnExistsForTestPath(test_batt_voltage_path)
+											else ifMatchReturnExistsForTestPath(test_batt_current_path)
+												else ifMatchReturnExistsForTestPath(test_batt_present_path)
+													else ifMatchReturnExistsForTestPath(test_batt_fake_battery_path)
+														else ifMatchReturnExistsForTestPath(test_batt_health_path)
+															else ifMatchReturnExistsForTestPath(test_bms_charge_full_design_path)
+
+												//
+												// Resolving a battery's paths asks whether these two
+												// attributes are on its node, and it does that for
+												// every battery that turns up - the keyboard, the
+												// hard-coded fallback node - not only the one a given
+												// test set paths up for. Answering "not there" for an
+												// unmocked node is the truth and keeps the strictness
+												// below for everything else; the explicit entries
+												// above still win where a test declared one.
+												//
+												if (g_str_has_suffix(path, "/charge_full") ||
+												        g_str_has_suffix(path, "/charge_full_design"))
+												{
+													return false;
+												}
 
 												// bad path: print error, force g_assert, and return -1
 												fprintf(stderr, "Bad path (%s) passed to g_file_test\n", path);
@@ -825,6 +949,9 @@ void reset_battery_path_retvals(void)
 	test_batt_energy_full_design_path_exists = false;
 	test_batt_charge_now_path_exists = false;
 	test_batt_charge_counter_path_exists = false;
+	test_batt_health_path_exists = false;
+	test_bms_charge_full_path_exists = false;
+	test_bms_charge_full_design_path_exists = false;
 	test_batt_charge_full_path_exists = false;
 	test_batt_charge_full_design_path_exists = false;
 	test_batt_temperature_path_exists = false;
@@ -839,6 +966,8 @@ void reset_battery_path_retvals(void)
 	test_batt_energy_full_design_path_retval = -1;
 	test_batt_charge_now_path_retval = -1;
 	test_batt_charge_counter_path_retval = -1;
+	test_bms_charge_full_path_retval = -1;
+	test_bms_charge_full_design_path_retval = -1;
 	test_batt_charge_full_path_retval = -1;
 	test_batt_charge_full_design_path_retval = -1;
 	test_batt_temperature_path_retval = -1;
@@ -859,6 +988,9 @@ void reset_battery_path_retvals(void)
 
 	test_find_power_supply_sysfs_path_retval = TEST_BATT_NODE;
 	test_find_power_supply_sysfs_paths_retval = NULL;
+	test_find_power_supply_bms_retval = NULL;
+	test_FileGetString_health[0] = '\0';
+	test_FileGetString_health_retval = -1;
 
 	//
 	// Readings are taken per battery, so there has to be a battery in the
@@ -1267,6 +1399,138 @@ test_battery_coulomb(/*api_test_fixture *fixture, gconstpointer unused*/)
 }
 
 //
+// Tests for the battery_full_design API method
+// double battery_full_design(int index)
+//
+static void
+test_battery_full_design(/*api_test_fixture *fixture, gconstpointer unused*/)
+{
+	// Out-of-range battery
+	reset_battery_path_retvals();
+	g_assert_true(-1 == battery_full_design(battery_count()));
+
+	// A driver that does not report a design capacity
+	reset_battery_path_retvals();
+	test_batt_charge_full_design_path_exists = true;
+	test_batt_charge_full_design_path_retval = -1;
+	g_assert_true(-1 == battery_full_design(BATTERY_PRIMARY));
+
+	// The ordinary case: the battery supply carries it
+	reset_battery_path_retvals();
+	test_batt_charge_full_design_path_exists = true;
+	test_batt_charge_full_design_path_retval = 3080000;
+	g_assert_true((3080000 / 1000.0) == battery_full_design(BATTERY_PRIMARY));
+
+	//
+	// A Qualcomm board: charge_full_design is on the BMS supply and not on
+	// the battery supply the module picked. Paths are resolved when the
+	// battery is detected, so the mocks have to say so before the list is
+	// rebuilt rather than afterwards.
+	//
+	reset_battery_path_retvals();
+	test_batt_charge_full_design_path_exists = false;
+	test_find_power_supply_bms_retval = TEST_BMS_NODE;
+	test_bms_charge_full_design_path_exists = true;
+	test_bms_charge_full_design_path_retval = 3080000;
+	battery_forget_all();
+	detect_battery_sysfs_paths();
+	g_assert_true(1 == battery_count());
+	g_assert_true((3080000 / 1000.0) == battery_full_design(BATTERY_PRIMARY));
+
+	// The battery supply wins when it has the attribute, so a board with
+	// both does not start reading the gauge instead.
+	reset_battery_path_retvals();
+	test_batt_charge_full_design_path_exists = true;
+	test_batt_charge_full_design_path_retval = 4000000;
+	test_find_power_supply_bms_retval = TEST_BMS_NODE;
+	test_bms_charge_full_design_path_exists = true;
+	test_bms_charge_full_design_path_retval = 3080000;
+	battery_forget_all();
+	detect_battery_sysfs_paths();
+	g_assert_true((4000000 / 1000.0) == battery_full_design(BATTERY_PRIMARY));
+
+	// Neither supply has it: still -1, not a silent fall back to
+	// charge_full, which would report every pack as factory fresh.
+	reset_battery_path_retvals();
+	test_batt_charge_full_design_path_exists = false;
+	test_batt_charge_full_path_exists = true;
+	test_batt_charge_full_path_retval = 2300000;
+	battery_forget_all();
+	detect_battery_sysfs_paths();
+	g_assert_true(-1 == battery_full_design(BATTERY_PRIMARY));
+
+	forget_batteries();
+}
+
+//
+// Tests for the battery_health API method
+// int battery_health(int index)
+//
+static void
+test_battery_health(/*api_test_fixture *fixture, gconstpointer unused*/)
+{
+	// Out-of-range battery
+	reset_battery_path_retvals();
+	g_assert_true(NYX_BATTERY_HEALTH_UNKNOWN == battery_health(battery_count()));
+
+	// No health attribute at all
+	reset_battery_path_retvals();
+	g_assert_true(NYX_BATTERY_HEALTH_UNKNOWN == battery_health(BATTERY_PRIMARY));
+
+	// Every value the kernel defines, spelled as the kernel spells it
+	static const struct
+	{
+		const char *text;
+		int value;
+	} cases[] =
+	{
+		{ "Good",                  NYX_BATTERY_HEALTH_GOOD },
+		{ "Overheat",              NYX_BATTERY_HEALTH_OVERHEAT },
+		{ "Dead",                  NYX_BATTERY_HEALTH_DEAD },
+		{ "Over voltage",          NYX_BATTERY_HEALTH_OVERVOLTAGE },
+		{ "Unspecified failure",   NYX_BATTERY_HEALTH_UNSPEC_FAILURE },
+		{ "Cold",                  NYX_BATTERY_HEALTH_COLD },
+		{ "Watchdog timer expire", NYX_BATTERY_HEALTH_WATCHDOG_TIMER_EXPIRE },
+		{ "Safety timer expire",   NYX_BATTERY_HEALTH_SAFETY_TIMER_EXPIRE },
+		{ "Over current",          NYX_BATTERY_HEALTH_OVERCURRENT },
+		{ "Calibration required",  NYX_BATTERY_HEALTH_CALIBRATION_REQUIRED },
+		{ "Warm",                  NYX_BATTERY_HEALTH_WARM },
+		{ "Cool",                  NYX_BATTERY_HEALTH_COOL },
+		{ "Hot",                   NYX_BATTERY_HEALTH_HOT },
+		{ "No battery",            NYX_BATTERY_HEALTH_NO_BATTERY },
+	};
+	size_t i;
+
+	for (i = 0; i < G_N_ELEMENTS(cases); i++)
+	{
+		reset_battery_path_retvals();
+		test_batt_health_path_exists = true;
+		test_FileGetString_health_retval = 0;
+		g_strlcpy(test_FileGetString_health, cases[i].text,
+		          sizeof(test_FileGetString_health));
+		g_assert_true(cases[i].value == battery_health(BATTERY_PRIMARY));
+	}
+
+	// Drivers are not consistent about case
+	reset_battery_path_retvals();
+	test_batt_health_path_exists = true;
+	test_FileGetString_health_retval = 0;
+	g_strlcpy(test_FileGetString_health, "GOOD",
+	          sizeof(test_FileGetString_health));
+	g_assert_true(NYX_BATTERY_HEALTH_GOOD == battery_health(BATTERY_PRIMARY));
+
+	// Something nobody has seen before is unknown, not a guess
+	reset_battery_path_retvals();
+	test_batt_health_path_exists = true;
+	test_FileGetString_health_retval = 0;
+	g_strlcpy(test_FileGetString_health, "Slightly damp",
+	          sizeof(test_FileGetString_health));
+	g_assert_true(NYX_BATTERY_HEALTH_UNKNOWN == battery_health(BATTERY_PRIMARY));
+
+	forget_batteries();
+}
+
+//
 // Tests for the battery_age API method
 // double battery_age(int index)
 //
@@ -1518,6 +1782,9 @@ int main(int argc, char **argv)
 	g_test_add_func("/battery/device/battery_full40", test_battery_full40);
 	g_test_add_func("/battery/device/battery_rawcoulomb", test_battery_rawcoulomb);
 	g_test_add_func("/battery/device/battery_coulomb", test_battery_coulomb);
+	g_test_add_func("/battery/device/battery_full_design",
+	                test_battery_full_design);
+	g_test_add_func("/battery/device/battery_health", test_battery_health);
 	g_test_add_func("/battery/device/battery_age", test_battery_age);
 
 	g_test_add_func("/battery/device/battery_is_present", test_battery_is_present);

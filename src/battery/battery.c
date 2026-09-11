@@ -80,6 +80,7 @@ typedef struct
 	char charge_full_path[PATH_LEN];
 	char charge_full_design_path[PATH_LEN];
 	char charge_counter_path[PATH_LEN];
+	char health_path[PATH_LEN];
 	char temperature_path[PATH_LEN];
 	char voltage_path[PATH_LEN];
 	char current_path[PATH_LEN];
@@ -377,6 +378,88 @@ double battery_full40(int index)
 }
 
 /**
+ * @brief Read the capacity the pack shipped with, in mAh.
+ *
+ * The counterpart to battery_full40(): that is what the gauge believes the
+ * pack holds now, this is what it held when it was made, and only the two
+ * together say anything about wear. Deliberately no fallback to charge_full -
+ * answering the design question with the present capacity would report every
+ * pack as factory fresh, which is worse than not answering.
+ *
+ * @retval Design capacity in mAh, or -1 where the driver does not report one.
+ */
+double battery_full_design(int index)
+{
+	battery_device_t *b = battery_at(index);
+	int charge_full_design;
+
+	if (!b ||
+	        (charge_full_design =
+	             nyx_utils_read_value(b->charge_full_design_path)) < 0)
+	{
+		return -1;
+	}
+
+	/* Divide the value by 1000 to convert from uAh to mAh */
+	return (double) charge_full_design / 1000;
+}
+
+/**
+ * @brief Read the condition the driver reports the battery to be in.
+ *
+ * The kernel's own verdict, from the "health" attribute, mapped onto
+ * nyx_battery_health_t. It is not worked out from any of the readings and is
+ * a different question from wear: a pack reporting "Good" can still hold half
+ * what it once did.
+ *
+ * @retval One of nyx_battery_health_t; NYX_BATTERY_HEALTH_UNKNOWN where there
+ *         is no such attribute or it says something this does not recognise.
+ */
+int battery_health(int index)
+{
+	battery_device_t *b = battery_at(index);
+	char health[64] = "";
+	size_t i;
+
+	static const struct
+	{
+		const char *name;
+		int value;
+	} known[] =
+	{
+		{ "Good",                    NYX_BATTERY_HEALTH_GOOD },
+		{ "Overheat",                NYX_BATTERY_HEALTH_OVERHEAT },
+		{ "Dead",                    NYX_BATTERY_HEALTH_DEAD },
+		{ "Over voltage",            NYX_BATTERY_HEALTH_OVERVOLTAGE },
+		{ "Unspecified failure",     NYX_BATTERY_HEALTH_UNSPEC_FAILURE },
+		{ "Cold",                    NYX_BATTERY_HEALTH_COLD },
+		{ "Watchdog timer expire",   NYX_BATTERY_HEALTH_WATCHDOG_TIMER_EXPIRE },
+		{ "Safety timer expire",     NYX_BATTERY_HEALTH_SAFETY_TIMER_EXPIRE },
+		{ "Over current",            NYX_BATTERY_HEALTH_OVERCURRENT },
+		{ "Calibration required",    NYX_BATTERY_HEALTH_CALIBRATION_REQUIRED },
+		{ "Warm",                    NYX_BATTERY_HEALTH_WARM },
+		{ "Cool",                    NYX_BATTERY_HEALTH_COOL },
+		{ "Hot",                     NYX_BATTERY_HEALTH_HOT },
+		{ "No battery",              NYX_BATTERY_HEALTH_NO_BATTERY },
+	};
+
+	if (!b || FileGetString(b->health_path, health, sizeof(health)) < 0)
+	{
+		return NYX_BATTERY_HEALTH_UNKNOWN;
+	}
+
+	for (i = 0; i < G_N_ELEMENTS(known); i++)
+	{
+		if (0 == g_ascii_strcasecmp(health, known[i].name))
+		{
+			return known[i].value;
+		}
+	}
+
+	return NYX_BATTERY_HEALTH_UNKNOWN;
+}
+
+/**
  * @brief Read battery current raw capacity
  *
  * @retval Battery capacity (double)
@@ -491,6 +574,50 @@ bool battery_is_present(int index)
 }
 
 /**
+ * @brief Point a path at the BMS's copy of an attribute if the battery has none.
+ *
+ * @param path a "<supply>/<attribute>" path, rewritten in place when the
+ *             attribute is missing where it points and a power_supply of type
+ *             "BMS" has one of the same name. Left alone otherwise, so the
+ *             caller still ends up with the path it asked for and the usual
+ *             "does not exist" handling applies.
+ */
+static void battery_prefer_bms_path(char *path)
+{
+	const char *attribute;
+	char *bms_path;
+	char candidate[PATH_LEN];
+
+	if (!path || g_file_test(path, G_FILE_TEST_EXISTS))
+	{
+		return;
+	}
+
+	attribute = strrchr(path, '/');
+
+	if (!attribute)
+	{
+		return;
+	}
+
+	bms_path = find_power_supply_sysfs_path("BMS");
+
+	if (!bms_path)
+	{
+		return;
+	}
+
+	snprintf(candidate, PATH_LEN, "%s%s", bms_path, attribute);
+
+	if (g_file_test(candidate, G_FILE_TEST_EXISTS))
+	{
+		g_strlcpy(path, candidate, PATH_LEN);
+	}
+
+	g_free(bms_path);
+}
+
+/**
  * @brief Fill in a battery's attribute paths and its identity.
  *
  * @param role what the battery powers, for a caller that wants to label it.
@@ -531,6 +658,24 @@ static void battery_set_paths(battery_device_t *b, const char *sysfs_path,
 	snprintf(b->current_path, PATH_LEN, "%s/current_now", sysfs_path);
 	snprintf(b->present_path, PATH_LEN, "%s/present", sysfs_path);
 	snprintf(b->fake_battery_path, PATH_LEN, "%s/pseudo_batt", sysfs_path);
+	snprintf(b->health_path, PATH_LEN, "%s/health", sysfs_path);
+
+	/*
+	 * How big the pack is, and how big it used to be, are fuel-gauge
+	 * questions, and the supply of type "Battery" is not always the fuel
+	 * gauge. On Qualcomm platforms the charger driver owns that supply and
+	 * a separate one of type "BMS" is the gauge: a tissot has charge_full
+	 * on both but charge_full_design only on the BMS, so asking the battery
+	 * supply alone answers "this pack has no factory capacity" about a pack
+	 * that publishes one a directory away.
+	 *
+	 * Only these two fall back. The readings that describe the moment -
+	 * voltage, current, temperature, charge - come from the supply the
+	 * module picked and stay there, so nothing starts silently mixing two
+	 * sources for the same instant.
+	 */
+	battery_prefer_bms_path(b->charge_full_path);
+	battery_prefer_bms_path(b->charge_full_design_path);
 }
 
 static bool battery_already_known(const char *sysfs_path)
