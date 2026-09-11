@@ -160,6 +160,7 @@ static char *test_batt_energy_now_path = "Battery/energy_now";
 static char *test_batt_energy_full_path = "Battery/energy_full";
 static char *test_batt_energy_full_design_path = "Battery/energy_full_design";
 static char *test_batt_charge_now_path = "Battery/charge_now";
+static char *test_batt_charge_counter_path = "Battery/charge_counter";
 static char *test_batt_charge_full_path = "Battery/charge_full";
 static char *test_batt_charge_full_design_path = "Battery/charge_full_design";
 static char *test_batt_temperature_path = "Battery/temp";
@@ -211,6 +212,7 @@ int32_t test_batt_energy_now_path_retval = 0;
 int32_t test_batt_energy_full_path_retval = 0;
 int32_t test_batt_energy_full_design_path_retval = 0;
 int32_t test_batt_charge_now_path_retval = 0;
+int32_t test_batt_charge_counter_path_retval = 0;
 int32_t test_batt_charge_full_path_retval = 0;
 int32_t test_batt_charge_full_design_path_retval = 0;
 int32_t test_batt_temperature_path_retval = 0;
@@ -231,17 +233,18 @@ int32_t nyx_utils_read_value(char *path)
 {
 	//fprintf(stderr,"path (%s) passed to nyx_utils_read_value\n", path);
 	ifMatchReturnRetvalForTestPath(test_batt_capacity_path)
-	else ifMatchReturnRetvalForTestPath(test_batt_energy_now_path)
-		else ifMatchReturnRetvalForTestPath(test_batt_energy_full_path)
-			else ifMatchReturnRetvalForTestPath(test_batt_energy_full_design_path)
-				else ifMatchReturnRetvalForTestPath(test_batt_charge_now_path)
-					else ifMatchReturnRetvalForTestPath(test_batt_charge_full_path)
-						else ifMatchReturnRetvalForTestPath(test_batt_charge_full_design_path)
-							else ifMatchReturnRetvalForTestPath(test_batt_temperature_path)
-								else ifMatchReturnRetvalForTestPath(test_batt_voltage_path)
-									else ifMatchReturnRetvalForTestPath(test_batt_current_path)
-										else ifMatchReturnRetvalForTestPath(test_batt_present_path)
-											else ifMatchReturnRetvalForTestPath(test_batt_fake_battery_path)
+		else ifMatchReturnRetvalForTestPath(test_batt_energy_now_path)
+			else ifMatchReturnRetvalForTestPath(test_batt_energy_full_path)
+				else ifMatchReturnRetvalForTestPath(test_batt_energy_full_design_path)
+					else ifMatchReturnRetvalForTestPath(test_batt_charge_now_path)
+						else ifMatchReturnRetvalForTestPath(test_batt_charge_counter_path)
+							else ifMatchReturnRetvalForTestPath(test_batt_charge_full_path)
+								else ifMatchReturnRetvalForTestPath(test_batt_charge_full_design_path)
+									else ifMatchReturnRetvalForTestPath(test_batt_temperature_path)
+										else ifMatchReturnRetvalForTestPath(test_batt_voltage_path)
+											else ifMatchReturnRetvalForTestPath(test_batt_current_path)
+												else ifMatchReturnRetvalForTestPath(test_batt_present_path)
+													else ifMatchReturnRetvalForTestPath(test_batt_fake_battery_path)
 
 												// bad path: print error, force g_assert, and return -1
 												fprintf(stderr, "Bad path (%s) passed to nyx_utils_read_value\n", path);
@@ -457,6 +460,7 @@ int32_t test_batt_energy_now_path_exists = false;
 int32_t test_batt_energy_full_path_exists = false;
 int32_t test_batt_energy_full_design_path_exists = false;
 int32_t test_batt_charge_now_path_exists = false;
+int32_t test_batt_charge_counter_path_exists = false;
 int32_t test_batt_charge_full_path_exists = false;
 int32_t test_batt_charge_full_design_path_exists = false;
 int32_t test_batt_temperature_path_exists = false;
@@ -504,17 +508,18 @@ gboolean g_file_test(const gchar *path, GFileTest test)
 	}
 
 	ifMatchReturnExistsForTestPath(test_batt_capacity_path)
-	else ifMatchReturnExistsForTestPath(test_batt_energy_now_path)
-		else ifMatchReturnExistsForTestPath(test_batt_energy_full_path)
-			else ifMatchReturnExistsForTestPath(test_batt_energy_full_design_path)
-				else ifMatchReturnExistsForTestPath(test_batt_charge_now_path)
-					else ifMatchReturnExistsForTestPath(test_batt_charge_full_path)
-						else ifMatchReturnExistsForTestPath(test_batt_charge_full_design_path)
-							else ifMatchReturnExistsForTestPath(test_batt_temperature_path)
-								else ifMatchReturnExistsForTestPath(test_batt_voltage_path)
-									else ifMatchReturnExistsForTestPath(test_batt_current_path)
-										else ifMatchReturnExistsForTestPath(test_batt_present_path)
-											else ifMatchReturnExistsForTestPath(test_batt_fake_battery_path)
+		else ifMatchReturnExistsForTestPath(test_batt_energy_now_path)
+			else ifMatchReturnExistsForTestPath(test_batt_energy_full_path)
+				else ifMatchReturnExistsForTestPath(test_batt_energy_full_design_path)
+					else ifMatchReturnExistsForTestPath(test_batt_charge_now_path)
+						else ifMatchReturnExistsForTestPath(test_batt_charge_counter_path)
+							else ifMatchReturnExistsForTestPath(test_batt_charge_full_path)
+								else ifMatchReturnExistsForTestPath(test_batt_charge_full_design_path)
+									else ifMatchReturnExistsForTestPath(test_batt_temperature_path)
+										else ifMatchReturnExistsForTestPath(test_batt_voltage_path)
+											else ifMatchReturnExistsForTestPath(test_batt_current_path)
+												else ifMatchReturnExistsForTestPath(test_batt_present_path)
+													else ifMatchReturnExistsForTestPath(test_batt_fake_battery_path)
 
 												// bad path: print error, force g_assert, and return -1
 												fprintf(stderr, "Bad path (%s) passed to g_file_test\n", path);
@@ -819,6 +824,7 @@ void reset_battery_path_retvals(void)
 	test_batt_energy_full_path_exists = false;
 	test_batt_energy_full_design_path_exists = false;
 	test_batt_charge_now_path_exists = false;
+	test_batt_charge_counter_path_exists = false;
 	test_batt_charge_full_path_exists = false;
 	test_batt_charge_full_design_path_exists = false;
 	test_batt_temperature_path_exists = false;
@@ -832,6 +838,7 @@ void reset_battery_path_retvals(void)
 	test_batt_energy_full_path_retval = -1;
 	test_batt_energy_full_design_path_retval = -1;
 	test_batt_charge_now_path_retval = -1;
+	test_batt_charge_counter_path_retval = -1;
 	test_batt_charge_full_path_retval = -1;
 	test_batt_charge_full_design_path_retval = -1;
 	test_batt_temperature_path_retval = -1;
@@ -1222,6 +1229,39 @@ test_battery_coulomb(/*api_test_fixture *fixture, gconstpointer unused*/)
 	test_batt_charge_now_path_exists = true;
 	test_batt_charge_now_path_retval = 1840000;
 	g_assert_true((1840000 / 1000) == battery_coulomb(BATTERY_PRIMARY));
+
+	// A driver with no charge_now at all, which is how Qualcomm's charger
+	// driver exports the "battery" supply: charge_counter carries the charge
+	// and nothing else does. 2634787 uAh is a tissot reading.
+	reset_battery_path_retvals();
+	test_batt_charge_counter_path_exists = true;
+	test_batt_charge_counter_path_retval = 2634787;
+	g_assert_true((2634787 / 1000.0) == battery_coulomb(BATTERY_PRIMARY));
+
+	// A charge_now that is present and permanently zero, which is how the
+	// same platform exports the "bms" supply. The counter beside it wins.
+	reset_battery_path_retvals();
+	test_batt_charge_now_path_exists = true;
+	test_batt_charge_now_path_retval = 0;
+	test_batt_charge_counter_path_exists = true;
+	test_batt_charge_counter_path_retval = 2634787;
+	g_assert_true((2634787 / 1000.0) == battery_coulomb(BATTERY_PRIMARY));
+
+	// charge_now wins when it has something to say, so nothing changes on a
+	// device that was already answering.
+	reset_battery_path_retvals();
+	test_batt_charge_now_path_exists = true;
+	test_batt_charge_now_path_retval = 1840000;
+	test_batt_charge_counter_path_exists = true;
+	test_batt_charge_counter_path_retval = 2634787;
+	g_assert_true((1840000 / 1000) == battery_coulomb(BATTERY_PRIMARY));
+
+	// A flat-zero charge_now with no counter to prefer is still reported as
+	// zero rather than turned into a failure.
+	reset_battery_path_retvals();
+	test_batt_charge_now_path_exists = true;
+	test_batt_charge_now_path_retval = 0;
+	g_assert_true(0 == battery_coulomb(BATTERY_PRIMARY));
 
 	forget_batteries();
 }

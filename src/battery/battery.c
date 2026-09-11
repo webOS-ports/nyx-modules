@@ -79,6 +79,7 @@ typedef struct
 	char charge_now_path[PATH_LEN];
 	char charge_full_path[PATH_LEN];
 	char charge_full_design_path[PATH_LEN];
+	char charge_counter_path[PATH_LEN];
 	char temperature_path[PATH_LEN];
 	char voltage_path[PATH_LEN];
 	char current_path[PATH_LEN];
@@ -387,7 +388,26 @@ double battery_rawcoulomb(int index)
 }
 
 /**
- * @brief Read battery current capacity
+ * @brief Read how much charge is in the battery right now, in mAh.
+ *
+ * charge_now is the obvious node and the one to prefer, but it is not the
+ * only node that carries this and on some drivers it is not the one that
+ * works. Qualcomm's charger and fuel-gauge drivers export the charge on the
+ * "battery" supply as charge_counter with no charge_now beside it at all,
+ * and put a charge_now on the companion "bms" supply that is hardwired to
+ * zero while the charge_now_raw next to it holds the real figure. Reading
+ * only charge_now therefore answers -1 on a pack that is reporting perfectly
+ * well.
+ *
+ * charge_counter is the same quantity in the same unit - accumulated charge
+ * in uAh - and is what Android reads for BATTERY_PROPERTY_CHARGE_COUNTER, so
+ * falling back to it costs nothing where charge_now works and is what makes
+ * the question answerable at all where it does not.
+ *
+ * A charge_now of zero falls back for the same reason: a pack with no charge
+ * left in it is a device that has switched off, so in practice a zero here
+ * only ever means the node is not wired up. It is still returned if there is
+ * no counter to prefer, rather than being turned into a failure.
  *
  * @retval Battery capacity (double)
  */
@@ -395,9 +415,23 @@ double battery_rawcoulomb(int index)
 double battery_coulomb(int index)
 {
 	battery_device_t *b = battery_at(index);
-	int charge_now;
+	int charge_now, charge_counter;
 
-	if (!b || (charge_now = nyx_utils_read_value(b->charge_now_path)) < 0)
+	if (!b)
+	{
+		return -1;
+	}
+
+	if ((charge_now = nyx_utils_read_value(b->charge_now_path)) <= 0)
+	{
+		if ((charge_counter =
+		         nyx_utils_read_value(b->charge_counter_path)) >= 0)
+		{
+			charge_now = charge_counter;
+		}
+	}
+
+	if (charge_now < 0)
 	{
 		return -1;
 	}
@@ -489,6 +523,8 @@ static void battery_set_paths(battery_device_t *b, const char *sysfs_path,
 	snprintf(b->charge_now_path, PATH_LEN, "%s/charge_now", sysfs_path);
 	snprintf(b->charge_full_path, PATH_LEN, "%s/charge_full", sysfs_path);
 	snprintf(b->charge_full_design_path, PATH_LEN, "%s/charge_full_design",
+	         sysfs_path);
+	snprintf(b->charge_counter_path, PATH_LEN, "%s/charge_counter",
 	         sysfs_path);
 	snprintf(b->temperature_path, PATH_LEN, "%s/temp", sysfs_path);
 	snprintf(b->voltage_path, PATH_LEN, "%s/voltage_now", sysfs_path);
