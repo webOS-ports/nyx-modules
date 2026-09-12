@@ -77,6 +77,7 @@
 #define MSGID_NYX_MOD_ALS_ENABLE_ERR                                        "NYXALS_ENABLE_ERR"
 #define MSGID_NYX_MOD_ALS_DISABLE_ERR                                       "NYXALS_DISABLE_ERR"
 #define MSGID_NYX_MOD_ALS_READ_EVENT_ERR                                    "NYXALS_READ_EVENT_ERR"
+#define MSGID_NYX_MOD_ALS_OPEN_ERR                                          "NYXALS_OPEN_ERR"
 
 /** LED Controller */
 #define MSGID_NYX_MOD_LED_NODEVICE_ERR                                      "NYXLED_NODEVICE_ERR"
