@@ -91,11 +91,16 @@ nyx_error_t nyx_module_register_method(nyx_instance_t instance,
 
 // default test return values
 int test_battery_percent_retval = 66;
+// What the battery.c readers below stand in for hand back: degrees, mV and
+// mA, not the raw microvolts and microamps their sysfs nodes carry.
 int test_battery_temperature_retval = 38;
-int test_battery_voltage_retval = 3928400;
-int test_battery_current_retval = 85703;
-int test_battery_avg_current_retval = 85703;
+int test_battery_voltage_retval = 3928;
+int test_battery_current_retval = 85;
+int test_battery_avg_current_retval = 85;
 double test_battery_full40_retval = 1150.000;
+// A pack that shipped at 1230 mAh and now holds 1150: worn, but working.
+double test_battery_full_design_retval = 1230.000;
+int test_battery_health_retval = NYX_BATTERY_HEALTH_GOOD;
 double test_battery_rawcoulomb_retval = 761.250;
 double test_battery_coulomb_retval = 748.800;
 double test_battery_age_retval = 99.21875;
@@ -156,6 +161,16 @@ int battery_avg_current(int index)
 double battery_full40(int index)
 {
 	return test_battery_full40_retval;
+}
+
+double battery_full_design(int index)
+{
+	return test_battery_full_design_retval;
+}
+
+int battery_health(int index)
+{
+	return test_battery_health_retval;
 }
 
 double battery_rawcoulomb(int index)
@@ -273,6 +288,8 @@ static float init_capacity = -1.0;
 static int32_t init_avg_current = -1;
 static float init_capacity_raw = -1.0;
 static float init_capacity_full40 = -1.0;
+static float init_capacity_full_design = -2.0;
+static int32_t init_health = -1;
 static int32_t init_age = -1;
 
 static void resetTestBatteryStatus(nyx_battery_status_t *batteryStatus)
@@ -288,6 +305,8 @@ static void resetTestBatteryStatus(nyx_battery_status_t *batteryStatus)
 	batteryStatus->avg_current = init_avg_current;
 	batteryStatus->capacity_raw = init_capacity_raw;
 	batteryStatus->capacity_full40 = init_capacity_full40;
+	batteryStatus->capacity_full_design = init_capacity_full_design;
+	batteryStatus->health = init_health;
 	batteryStatus->age = init_age;
 }
 
@@ -411,6 +430,8 @@ static void test_battery_query_battery_status(api_test_fixture *fixture,
 	g_assert_true(testBatteryStatus.avg_current != init_avg_current);
 	g_assert_true(testBatteryStatus.capacity_raw != init_capacity_raw);
 	g_assert_true(testBatteryStatus.capacity_full40 != init_capacity_full40);
+	g_assert_true(testBatteryStatus.capacity_full_design != init_capacity_full_design);
+	g_assert_true(testBatteryStatus.health != init_health);
 	g_assert_true(testBatteryStatus.age != init_age);
 }
 

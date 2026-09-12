@@ -52,6 +52,8 @@ int battery_voltage(int index);
 int battery_current(int index);
 int battery_avg_current(int index);
 double battery_full40(int index);
+double battery_full_design(int index);
+int battery_health(int index);
 double battery_rawcoulomb(int index);
 double battery_coulomb(int index);
 double battery_age(int index);

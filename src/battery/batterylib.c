@@ -170,6 +170,8 @@ void battery_read_status_at(int index, nyx_battery_status_t *state)
 			state->capacity = battery_coulomb(index);
 			state->capacity_raw = battery_rawcoulomb(index);
 			state->capacity_full40 = battery_full40(index);
+			state->capacity_full_design = battery_full_design(index);
+			state->health = battery_health(index);
 			state->age = battery_age(index);
 
 			if (state->avg_current >  0)
