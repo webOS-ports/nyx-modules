@@ -47,6 +47,48 @@ NYX_DECLARE_MODULE(NYX_DEVICE_KEYS, "Keys");
 int keypad_event_fd[MAX_INPUT_NODES];
 int num_keypad_event_fd = 0;
 int keypad_notifier_pipe_fds[2];
+
+/*
+ * The notifier thread signals the main loop that an input event is waiting,
+ * but it never reads the evdev descriptors itself - read_input_event() on the
+ * main thread does that. poll() is level-triggered, so between the signal and
+ * that read the same event stays readable and the thread would otherwise wake,
+ * write to the pipe and poll again in a tight loop. One keypress produced tens
+ * of pipe writes, and QSocketNotifier delivered one main-loop wakeup for each.
+ *
+ * notify_pending closes that gap: the thread signals once, then blocks until
+ * the main thread reports the descriptors drained.
+ */
+static pthread_mutex_t notify_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  notify_cond  = PTHREAD_COND_INITIALIZER;
+static bool            notify_pending = false;
+
+static void notifier_wait_until_drained(void)
+{
+	pthread_mutex_lock(&notify_mutex);
+
+	while (notify_pending)
+	{
+		pthread_cond_wait(&notify_cond, &notify_mutex);
+	}
+
+	pthread_mutex_unlock(&notify_mutex);
+}
+
+static void notifier_mark_pending(void)
+{
+	pthread_mutex_lock(&notify_mutex);
+	notify_pending = true;
+	pthread_mutex_unlock(&notify_mutex);
+}
+
+static void notifier_mark_drained(void)
+{
+	pthread_mutex_lock(&notify_mutex);
+	notify_pending = false;
+	pthread_cond_signal(&notify_cond);
+	pthread_mutex_unlock(&notify_mutex);
+}
 pthread_t notifier_thread;
 
 /**
@@ -102,15 +144,25 @@ void *notifier_thread_func(void *user_data)
     }
 
     while (1) {
+        /* Do not poll again until the main thread has read what the last
+         * notification was about, or this spins on the same pending event. */
+        notifier_wait_until_drained();
+
         int ret_val = poll(fds, num_keypad_event_fd, -1);
         if (ret_val <= 0)
             continue;
 
         nyx_debug("Got new input event; waking up main thread ..");
 
+        notifier_mark_pending();
+
         /* wakeup main thread */
         if (write(keypad_notifier_pipe_fds[1], &event, sizeof(int)) < 0)
+        {
             nyx_debug("Failed to wake main thread: %s", strerror(errno));
+            /* Nothing will drain on our behalf if the write failed. */
+            notifier_mark_drained();
+        }
     }
 
     return NULL;
@@ -213,7 +265,7 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
 
 	*d = (nyx_device_t *) keys_device;
 
-    if (pipe2(keypad_notifier_pipe_fds, 0) < 0)
+    if (pipe2(keypad_notifier_pipe_fds, O_NONBLOCK) < 0)
     {
         nyx_error(MSGID_NYX_MOD_KEYS_OPEN_ERR, 0, "Failed to create notifier pipe");
         return NYX_ERROR_GENERIC;
@@ -276,9 +328,15 @@ int read_input_event(InputEvent_t* pEvents, int maxEvents)
 		return -1;
 	}
 
-    /* clear notifier pipe */
-    if (read(keypad_notifier_pipe_fds[0], &event, sizeof(int)) < 0)
-        nyx_debug("Failed to drain notifier pipe: %s", strerror(errno));
+	/* Past this point every return has to go through notifier_mark_drained():
+	 * the notifier thread is blocked until it is told the descriptors were
+	 * read, so an early return that skips it stops all key input for good. */
+
+    /* Clear the notifier pipe completely: a burst can leave more than one
+     * token queued, and each leftover token is another main-loop wakeup that
+     * finds nothing to read. */
+    while (read(keypad_notifier_pipe_fds[0], &event, sizeof(int)) > 0)
+        ;
 
     for (n = 0; n < num_keypad_event_fd; n++) {
         fds[n].fd = keypad_event_fd[n];
@@ -287,7 +345,10 @@ int read_input_event(InputEvent_t* pEvents, int maxEvents)
 
     int ret_val = poll(fds, num_keypad_event_fd, 0);
     if (ret_val <= 0)
+    {
+        notifier_mark_drained();
         return 0;
+    }
 
     for (n = 0; n < num_keypad_event_fd; n++)
     {
@@ -311,6 +372,9 @@ int read_input_event(InputEvent_t* pEvents, int maxEvents)
             }
         }
     }
+
+	/* Descriptors are drained now, so the notifier thread may poll again. */
+	notifier_mark_drained();
 
 	return numEvents;
 }
