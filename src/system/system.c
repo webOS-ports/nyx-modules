@@ -90,6 +90,10 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
 	                           "system_suspend");
 
 	nyx_module_register_method(i, (nyx_device_t *)nyxDev,
+	                           NYX_SYSTEM_SUSPEND_ASYNC_MODULE_METHOD,
+	                           "system_suspend_async");
+
+	nyx_module_register_method(i, (nyx_device_t *)nyxDev,
 	                           NYX_SYSTEM_SHUTDOWN_MODULE_METHOD,
 	                           "system_shutdown");
 
@@ -222,6 +226,27 @@ nyx_error_t system_suspend(nyx_device_handle_t handle, bool *success)
 	}
 
 	return NYX_ERROR_NONE;
+}
+
+
+/*
+ * sleepd only ever calls the async entry point - MachineSleep() in
+ * src/pwrevents/machine.c goes straight to nyx_system_suspend_async() - so a
+ * module that registers just NYX_SYSTEM_SUSPEND_MODULE_METHOD can never
+ * suspend: the call returns NYX_ERROR_NOT_IMPLEMENTED (9), MachineSleep()
+ * reports failure and the state machine aborts. Measured on a PinePhone Pro
+ * before this method existed: sleepd ran a complete suspend cycle twice a
+ * second forever, /sys/power/suspend_stats/success stayed at 0 across 25 hours
+ * of uptime, and the battery drained at 33%/hour.
+ *
+ * The work is the same as the synchronous entry point. /usr/sbin/suspend_action
+ * writes to /sys/power/autosleep, which arms opportunistic suspend and returns
+ * immediately rather than blocking until the system comes back - so the
+ * "asynchronous" contract is what this path naturally provides.
+ */
+nyx_error_t system_suspend_async(nyx_device_handle_t handle, bool *success)
+{
+	return system_suspend(handle, success);
 }
 
 
