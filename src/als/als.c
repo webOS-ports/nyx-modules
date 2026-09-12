@@ -31,6 +31,7 @@
 #include <nyx/module/nyx_utils.h>
 #include <nyx/module/nyx_log.h>
 #include "msgid.h"
+#include "nyx_conf.h"
 
 #define MAX_EVENTS		64
 #ifndef ALS_INPUT_DEVICE
