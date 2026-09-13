@@ -222,6 +222,8 @@ static nyx_error_t als_arm_timer(als_device_t *als_device, int interval_ms)
 		return NYX_ERROR_GENERIC;
 	}
 
+	g_warning("ALSNYX: armed timer fd=%d interval=%dms", als_device->fd, interval_ms);
+
 	return NYX_ERROR_NONE;
 }
 
@@ -278,7 +280,12 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t** device)
 		g_free(scale_path);
 		g_free(iio_path);
 
-		als_device->fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+		/*
+		 * CLOCK_BOOTTIME rather than CLOCK_MONOTONIC: it keeps counting
+		 * across a suspend, so the first sample after a resume is not
+		 * delayed by however long the device was down.
+		 */
+		als_device->fd = timerfd_create(CLOCK_BOOTTIME, TFD_CLOEXEC | TFD_NONBLOCK);
 
 		if (als_device->fd < 0) {
 			nyx_error(MSGID_NYX_MOD_ALS_OPEN_ERR, 0,
@@ -290,6 +297,9 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t** device)
 
 		als_device->iio_mode = TRUE;
 		als_device->interval_ms = ALS_INTERVAL_LOW_MS;
+
+		g_warning("ALSNYX: IIO mode, raw=%s scale=%.4f timerfd=%d",
+		          als_device->iio_raw_path, als_device->iio_scale, als_device->fd);
 
 		/* Left disarmed until set_operating_mode turns the sensor on, so an
 		 * opened-but-unused ALS costs nothing. */
@@ -461,13 +471,21 @@ static nyx_error_t als_get_event_iio(als_device_t *als_device, nyx_event_t **eve
 
 	if (rd != (ssize_t) sizeof(expirations)) {
 		/* Nothing pending is not an error - the caller polls this fd. */
-		if (rd < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+		if (rd < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+			g_warning("ALSNYX: get_event - timerfd not ready (EAGAIN)");
 			return NYX_ERROR_NONE;
+		}
 
+		g_warning("ALSNYX: get_event - timerfd read rd=%zd errno=%d", rd, errno);
 		return NYX_ERROR_GENERIC;
 	}
 
+	g_warning("ALSNYX: timer fired, %llu expirations",
+	          (unsigned long long) expirations);
+
 	double raw = 0.0;
+
+	g_warning("ALSNYX: reading %s (scale %.4f)", als_device->iio_raw_path, als_device->iio_scale);
 
 	if (!als_read_double(als_device->iio_raw_path, &raw)) {
 		nyx_warn(MSGID_NYX_MOD_ALS_READ_EVENT_ERR, 0,
@@ -482,11 +500,21 @@ static nyx_error_t als_get_event_iio(als_device_t *als_device, nyx_event_t **eve
 			return NYX_ERROR_OUT_OF_MEMORY;
 	}
 
-	als_device->current_event_ptr->item.intensity_in_lux =
-		(int32_t) (raw * als_device->iio_scale);
+	double lux = raw * als_device->iio_scale;
+	int32_t lux_i = (int32_t) (lux + 0.5);
+
+	if (lux_i == 0 && raw > 0.0)
+		lux_i = 1;
+
+	als_device->current_event_ptr->item.intensity_in_lux = lux_i;
+
+	g_warning("ALSNYX: raw=%.1f x %.4f = %.3f -> %d lux", raw,
+	          als_device->iio_scale, lux, lux_i);
 
 	*event = (nyx_event_t *) als_device->current_event_ptr;
 	als_device->current_event_ptr = NULL;
+
+	g_warning("ALSNYX: handing back event %p", (void *) *event);
 
 	return NYX_ERROR_NONE;
 }
