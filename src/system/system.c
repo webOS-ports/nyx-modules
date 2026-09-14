@@ -27,6 +27,7 @@
 #include <stdbool.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -92,6 +93,10 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
 	nyx_module_register_method(i, (nyx_device_t *)nyxDev,
 	                           NYX_SYSTEM_SUSPEND_ASYNC_MODULE_METHOD,
 	                           "system_suspend_async");
+
+	nyx_module_register_method(i, (nyx_device_t *)nyxDev,
+	                           NYX_SYSTEM_RESUME_MODULE_METHOD,
+	                           "system_resume");
 
 	nyx_module_register_method(i, (nyx_device_t *)nyxDev,
 	                           NYX_SYSTEM_SHUTDOWN_MODULE_METHOD,
@@ -229,6 +234,22 @@ nyx_error_t system_suspend(nyx_device_handle_t handle, bool *success)
 }
 
 
+static int write_sysfs_string(const char *path, const char *value)
+{
+	ssize_t written;
+	int fd = open(path, O_WRONLY);
+
+	if (fd < 0)
+	{
+		return -1;
+	}
+
+	written = write(fd, value, strlen(value));
+	close(fd);
+
+	return (written < 0) ? -1 : 0;
+}
+
 /*
  * sleepd only ever calls the async entry point - MachineSleep() in
  * src/pwrevents/machine.c goes straight to nyx_system_suspend_async() - so a
@@ -239,14 +260,64 @@ nyx_error_t system_suspend(nyx_device_handle_t handle, bool *success)
  * second forever, /sys/power/suspend_stats/success stayed at 0 across 25 hours
  * of uptime, and the battery drained at 33%/hour.
  *
- * The work is the same as the synchronous entry point. /usr/sbin/suspend_action
- * writes to /sys/power/autosleep, which arms opportunistic suspend and returns
- * immediately rather than blocking until the system comes back - so the
- * "asynchronous" contract is what this path naturally provides.
+ * Doing the work here rather than deferring to system_suspend() matters: that
+ * path depends on an /usr/sbin/suspend_action script no image ships, and its
+ * fallback is a sleep(5) that reports success without suspending anything -
+ * which is exactly what a PinePhone Pro measured: sleepd believed it was
+ * sleeping while /sys/power/suspend_stats/success stayed at 0.
+ *
+ * Writing "mem" to /sys/power/autosleep arms opportunistic suspend and
+ * returns immediately - the kernel suspends as soon as no wakeup source is
+ * held, retries on its own after every wake, and that is the asynchronous
+ * contract sleepd's reworked state machine expects (the same semantics the
+ * hybris module gets from libsuspend). system_resume() writes "off" so a
+ * device sleepd wants awake stays awake; without it the kernel re-enters
+ * suspend the moment the wakeup source that woke it is released. Kernels
+ * without CONFIG_PM_AUTOSLEEP fall back to a blocking write of
+ * /sys/power/state, which returns on resume; sleepd runs MachineSleep() on
+ * its suspend thread, so blocking there is tolerable.
  */
 nyx_error_t system_suspend_async(nyx_device_handle_t handle, bool *success)
 {
-	return system_suspend(handle, success);
+	int ret;
+
+	if (handle != nyxDev)
+	{
+		return NYX_ERROR_INVALID_HANDLE;
+	}
+
+	ret = write_sysfs_string("/sys/power/autosleep", "mem");
+
+	if (ret < 0)
+	{
+		ret = write_sysfs_string("/sys/power/state", "mem");
+	}
+
+	if (success)
+	{
+		*success = (ret == 0);
+	}
+
+	return NYX_ERROR_NONE;
+}
+
+nyx_error_t system_resume(nyx_device_handle_t handle, bool *success)
+{
+	int ret;
+
+	if (handle != nyxDev)
+	{
+		return NYX_ERROR_INVALID_HANDLE;
+	}
+
+	ret = write_sysfs_string("/sys/power/autosleep", "off");
+
+	if (success)
+	{
+		*success = (ret == 0);
+	}
+
+	return NYX_ERROR_NONE;
 }
 
 
