@@ -255,27 +255,32 @@ static int write_sysfs_string(const char *path, const char *value)
  * src/pwrevents/machine.c goes straight to nyx_system_suspend_async() - so a
  * module that registers just NYX_SYSTEM_SUSPEND_MODULE_METHOD can never
  * suspend: the call returns NYX_ERROR_NOT_IMPLEMENTED (9), MachineSleep()
- * reports failure and the state machine aborts. Measured on a PinePhone Pro
- * before this method existed: sleepd ran a complete suspend cycle twice a
- * second forever, /sys/power/suspend_stats/success stayed at 0 across 25 hours
- * of uptime, and the battery drained at 33%/hour.
+ * reports failure and the state machine aborts.
  *
- * Doing the work here rather than deferring to system_suspend() matters: that
- * path depends on an /usr/sbin/suspend_action script no image ships, and its
- * fallback is a sleep(5) that reports success without suspending anything -
- * which is exactly what a PinePhone Pro measured: sleepd believed it was
- * sleeping while /sys/power/suspend_stats/success stayed at 0.
+ * Suspend one-shot through /sys/power/state rather than arming
+ * /sys/power/autosleep, even though the method is named "async".
+ * StateSleep() in sleepd treats this call as the whole sleep:
  *
- * Writing "mem" to /sys/power/autosleep arms opportunistic suspend and
- * returns immediately - the kernel suspends as soon as no wakeup source is
- * held, retries on its own after every wake, and that is the asynchronous
- * contract sleepd's reworked state machine expects (the same semantics the
- * hybris module gets from libsuspend). system_resume() writes "off" so a
- * device sleepd wants awake stays awake; without it the kernel re-enters
- * suspend the moment the wakeup source that woke it is released. Kernels
- * without CONFIG_PM_AUTOSLEEP fall back to a blocking write of
- * /sys/power/state, which returns on resume; sleepd runs MachineSleep() on
- * its suspend thread, so blocking there is tolerable.
+ *     else if (!MachineSleep()) { ... }
+ *     // We woke up from sleep.
+ *     PwrEventThawActivities();
+ *     return kPowerStateKernelResume;   -> MachineWakeup()
+ *
+ * A write to /sys/power/state blocks until the system actually resumes, which
+ * is exactly that contract. Autosleep is not: it returns immediately and
+ * leaves the kernel suspending opportunistically forever after. Measured on a
+ * PinePhone Pro, that turns the phone into a zombie - sleepd races ahead to
+ * kernel-resume and tries to disarm autosleep, the kernel suspends inside that
+ * window, sleepd is frozen mid-flight so the disarm never runs, and from then
+ * on every wake re-suspends before userspace can take a wakelock. The device
+ * looks dead and the only way out is a forced power-cycle, which is what the
+ * mysterious "reboots" during suspend testing actually were.
+ *
+ * Autosleep would also suspend the device with the screen on: sleepd holds
+ * kernel wakelocks for activities only, not for "the user is looking at it".
+ *
+ * Blocking here is safe: MachineSleep() runs on sleepd's dedicated suspend
+ * thread, not its main loop.
  */
 nyx_error_t system_suspend_async(nyx_device_handle_t handle, bool *success)
 {
@@ -286,12 +291,7 @@ nyx_error_t system_suspend_async(nyx_device_handle_t handle, bool *success)
 		return NYX_ERROR_INVALID_HANDLE;
 	}
 
-	ret = write_sysfs_string("/sys/power/autosleep", "mem");
-
-	if (ret < 0)
-	{
-		ret = write_sysfs_string("/sys/power/state", "mem");
-	}
+	ret = write_sysfs_string("/sys/power/state", "mem");
 
 	if (success)
 	{
@@ -301,20 +301,23 @@ nyx_error_t system_suspend_async(nyx_device_handle_t handle, bool *success)
 	return NYX_ERROR_NONE;
 }
 
+/*
+ * Nothing to undo after a one-shot suspend, but disarm autosleep defensively:
+ * an image whose previous nyx build armed it, or anything else that did, would
+ * otherwise leave the device unable to stay awake.
+ */
 nyx_error_t system_resume(nyx_device_handle_t handle, bool *success)
 {
-	int ret;
-
 	if (handle != nyxDev)
 	{
 		return NYX_ERROR_INVALID_HANDLE;
 	}
 
-	ret = write_sysfs_string("/sys/power/autosleep", "off");
+	write_sysfs_string("/sys/power/autosleep", "off");
 
 	if (success)
 	{
-		*success = (ret == 0);
+		*success = true;
 	}
 
 	return NYX_ERROR_NONE;
