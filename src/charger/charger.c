@@ -123,10 +123,15 @@ nyx_error_t core_charger_read_status(nyx_charger_status_t *status)
 	/* before we start to update the charger status we reset it completely */
 	memset(&gChargerStatus, 0, sizeof(nyx_charger_status_t));
 
-	usb_online      = (nyx_utils_read_value(charger_usb_sysfs_online_path) == 1);
-	ac_online       = (nyx_utils_read_value(charger_ac_sysfs_online_path) == 1);
-	touch_online    = (nyx_utils_read_value(charger_touch_sysfs_online_path) == 1);
-	wireless_online = (nyx_utils_read_value(charger_wireless_sysfs_online_path) == 1);
+	/*
+	 * Any positive value is online: the power_supply ABI defines 1 as
+	 * "online fixed" and 2 as "online programmable" (MediaTek's mt6375
+	 * reports 2 on a wall charger). A missing node reads as -1.
+	 */
+	usb_online      = (nyx_utils_read_value(charger_usb_sysfs_online_path) > 0);
+	ac_online       = (nyx_utils_read_value(charger_ac_sysfs_online_path) > 0);
+	touch_online    = (nyx_utils_read_value(charger_touch_sysfs_online_path) > 0);
+	wireless_online = (nyx_utils_read_value(charger_wireless_sysfs_online_path) > 0);
 
 	if (usb_online)
 	{
