@@ -28,6 +28,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <time.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -205,84 +206,197 @@ nyx_error_t system_query_rtc_time(nyx_device_handle_t handle, time_t *time)
 }
 
 
-nyx_error_t system_suspend(nyx_device_handle_t handle, bool *success)
+/*
+ * Suspend: one-shot, blocking, with the wakeup_count handshake.
+ *
+ * sleepd calls nyx_system_suspend_async() from MachineSleep() on its own
+ * suspend thread and treats the call as the whole sleep: when it returns the
+ * state machine goes straight to kernel-resume (resume signal, MachineWakeup,
+ * idle check rescheduled). Both suspend entry points therefore share this one
+ * body and block until the kernel has resumed or refused to enter suspend.
+ *
+ * The handshake mirrors what Android's SystemSuspend does and works the same
+ * on kernels with and without PM_AUTOSLEEP:
+ *
+ *   1. read /sys/power/wakeup_count. The read blocks while any wakeup source
+ *      is active - that includes every kernel wakelock in /sys/power/wake_lock,
+ *      which is how sleepd activities, IPC clients and the display manager veto
+ *      the suspend between the userspace vote and the kernel write. The kernel
+ *      logs the active sources ("PM: active wakeup source: ...") while waiting.
+ *   2. write the value back. EBUSY (or EINVAL on older kernels) means a wakeup
+ *      event raced with us: report "not suspended" and let sleepd retry after
+ *      after_resume_idle_ms. That is the retry loop; there is none here.
+ *   3. write "mem" to /sys/power/state. Returns 0 once the kernel has resumed;
+ *      -EBUSY if a wakeup arrived during entry (also "not suspended").
+ *
+ * /sys/power/autosleep is never armed: an opportunistic re-suspend loop the
+ * kernel runs on its own leaves sleepd unable to tell wake from sleep and,
+ * measured on a PinePhone Pro, turns the device into a zombie that re-suspends
+ * before userspace can take a wakelock. system_resume() only disarms it, in
+ * case something else did.
+ *
+ * *success = false with NYX_ERROR_NONE means "retry later"; an NYX error is
+ * reserved for a bad handle.
+ */
+
+#define SYSFS_POWER_STATE   "/sys/power/state"
+#define SYSFS_WAKEUP_COUNT  "/sys/power/wakeup_count"
+#define SYSFS_AUTOSLEEP     "/sys/power/autosleep"
+
+/* Returns 0, or -errno. */
+static int write_sysfs_string(const char *path, const char *value)
 {
+	ssize_t written;
+	int fd = open(path, O_WRONLY | O_CLOEXEC);
+
+	if (fd < 0)
+	{
+		return -errno;
+	}
+
+	written = write(fd, value, strlen(value));
+
+	if (written < 0)
+	{
+		int err = errno;
+		close(fd);
+		return -err;
+	}
+
+	close(fd);
+	return 0;
+}
+
+/*
+ * Reads the current wakeup_count into buf, stripped of the trailing newline.
+ * Returns 0 on success, -errno on failure. Blocks while a wakeup source is
+ * active (see above); the kernel returns EINTR if a signal interrupts the wait.
+ */
+static int read_wakeup_count(char *buf, size_t len)
+{
+	ssize_t n;
+	int fd = open(SYSFS_WAKEUP_COUNT, O_RDONLY | O_CLOEXEC);
+
+	if (fd < 0)
+	{
+		return -errno;
+	}
+
+	n = read(fd, buf, len - 1);
+
+	if (n < 0)
+	{
+		int err = errno;
+		close(fd);
+		return -err;
+	}
+
+	close(fd);
+
+	while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == ' '))
+	{
+		n--;
+	}
+
+	buf[n] = '\0';
+	return (n > 0) ? 0 : -EIO;
+}
+
+static double boottime_now(void)
+{
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_BOOTTIME, &ts) != 0)
+	{
+		return 0.0;
+	}
+
+	return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+static nyx_error_t suspend_blocking(nyx_device_handle_t handle, bool *success)
+{
+	char count[32];
+	double t0;
+	int ret;
+
 	if (handle != nyxDev)
 	{
 		return NYX_ERROR_INVALID_HANDLE;
 	}
 
-	int32_t ret = access("/usr/sbin/suspend_action", R_OK | X_OK);
-
-	if (ret || (success == NULL))
+	if (success)
 	{
-		/* dummy sleep function */
-		sleep(5);
-		ret = 0;
+		*success = false;
+	}
+
+	ret = read_wakeup_count(count, sizeof(count));
+
+	if (ret == -ENOENT)
+	{
+		/* No wakeup_count on this kernel: no handshake possible, suspend blind. */
+		nyx_info(MSGID_NYX_MOD_SYSTEM_SUSPEND, 0,
+		         "no " SYSFS_WAKEUP_COUNT ", suspending without the handshake");
+	}
+	else if (ret < 0)
+	{
+		nyx_info(MSGID_NYX_MOD_SYSTEM_SUSPEND, 0,
+		         "not suspended: reading " SYSFS_WAKEUP_COUNT " failed: %s (%d)",
+		         strerror(-ret), -ret);
+		return NYX_ERROR_NONE;
 	}
 	else
 	{
-		ret = system("/usr/sbin/suspend_action");
+		ret = write_sysfs_string(SYSFS_WAKEUP_COUNT, count);
+
+		if (ret < 0)
+		{
+			/* EBUSY (EINVAL on old kernels): a wakeup event raced us. */
+			nyx_info(MSGID_NYX_MOD_SYSTEM_SUSPEND, 0,
+			         "not suspended: wakeup_count %s changed under us: %s (%d)",
+			         count, strerror(-ret), -ret);
+			return NYX_ERROR_NONE;
+		}
 	}
+
+	t0 = boottime_now();
+	ret = write_sysfs_string(SYSFS_POWER_STATE, "mem");
+
+	if (ret < 0)
+	{
+		nyx_info(MSGID_NYX_MOD_SYSTEM_SUSPEND, 0,
+		         "not suspended: writing mem to " SYSFS_POWER_STATE " failed: %s (%d)",
+		         strerror(-ret), -ret);
+		return NYX_ERROR_NONE;
+	}
+
+	nyx_info(MSGID_NYX_MOD_SYSTEM_SUSPEND, 0,
+	         "suspended and resumed after %.1f s", boottime_now() - t0);
 
 	if (success)
 	{
-		*success = (ret == 0);
+		*success = true;
 	}
 
 	return NYX_ERROR_NONE;
 }
 
-
-static int write_sysfs_string(const char *path, const char *value)
+nyx_error_t system_suspend(nyx_device_handle_t handle, bool *success)
 {
-	ssize_t written;
-	int fd = open(path, O_WRONLY);
+	return suspend_blocking(handle, success);
+}
 
-	if (fd < 0)
-	{
-		return -1;
-	}
-
-	written = write(fd, value, strlen(value));
-	close(fd);
-
-	return (written < 0) ? -1 : 0;
+nyx_error_t system_suspend_async(nyx_device_handle_t handle, bool *success)
+{
+	return suspend_blocking(handle, success);
 }
 
 /*
- * sleepd only ever calls the async entry point - MachineSleep() in
- * src/pwrevents/machine.c goes straight to nyx_system_suspend_async() - so a
- * module that registers just NYX_SYSTEM_SUSPEND_MODULE_METHOD can never
- * suspend: the call returns NYX_ERROR_NOT_IMPLEMENTED (9), MachineSleep()
- * reports failure and the state machine aborts.
- *
- * Suspend one-shot through /sys/power/state rather than arming
- * /sys/power/autosleep, even though the method is named "async".
- * StateSleep() in sleepd treats this call as the whole sleep:
- *
- *     else if (!MachineSleep()) { ... }
- *     // We woke up from sleep.
- *     PwrEventThawActivities();
- *     return kPowerStateKernelResume;   -> MachineWakeup()
- *
- * A write to /sys/power/state blocks until the system actually resumes, which
- * is exactly that contract. Autosleep is not: it returns immediately and
- * leaves the kernel suspending opportunistically forever after. Measured on a
- * PinePhone Pro, that turns the phone into a zombie - sleepd races ahead to
- * kernel-resume and tries to disarm autosleep, the kernel suspends inside that
- * window, sleepd is frozen mid-flight so the disarm never runs, and from then
- * on every wake re-suspends before userspace can take a wakelock. The device
- * looks dead and the only way out is a forced power-cycle, which is what the
- * mysterious "reboots" during suspend testing actually were.
- *
- * Autosleep would also suspend the device with the screen on: sleepd holds
- * kernel wakelocks for activities only, not for "the user is looking at it".
- *
- * Blocking here is safe: MachineSleep() runs on sleepd's dedicated suspend
- * thread, not its main loop.
+ * Nothing to undo after a one-shot suspend. Disarm autosleep defensively, only
+ * where the node exists: an image whose previous nyx build armed it, or anything
+ * else that did, would otherwise leave the device unable to stay awake.
  */
-nyx_error_t system_suspend_async(nyx_device_handle_t handle, bool *success)
+nyx_error_t system_resume(nyx_device_handle_t handle, bool *success)
 {
 	int ret;
 
@@ -291,29 +405,17 @@ nyx_error_t system_suspend_async(nyx_device_handle_t handle, bool *success)
 		return NYX_ERROR_INVALID_HANDLE;
 	}
 
-	ret = write_sysfs_string("/sys/power/state", "mem");
-
-	if (success)
+	if (access(SYSFS_AUTOSLEEP, W_OK) == 0)
 	{
-		*success = (ret == 0);
+		ret = write_sysfs_string(SYSFS_AUTOSLEEP, "off");
+
+		if (ret < 0)
+		{
+			nyx_info(MSGID_NYX_MOD_SYSTEM_SUSPEND, 0,
+			         "disarming " SYSFS_AUTOSLEEP " failed: %s (%d)",
+			         strerror(-ret), -ret);
+		}
 	}
-
-	return NYX_ERROR_NONE;
-}
-
-/*
- * Nothing to undo after a one-shot suspend, but disarm autosleep defensively:
- * an image whose previous nyx build armed it, or anything else that did, would
- * otherwise leave the device unable to stay awake.
- */
-nyx_error_t system_resume(nyx_device_handle_t handle, bool *success)
-{
-	if (handle != nyxDev)
-	{
-		return NYX_ERROR_INVALID_HANDLE;
-	}
-
-	write_sysfs_string("/sys/power/autosleep", "off");
 
 	if (success)
 	{
