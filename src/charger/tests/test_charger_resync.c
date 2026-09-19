@@ -302,6 +302,30 @@ static void test_configured_slot_wins(void)
 	fixture_teardown();
 }
 
+/*
+ * "online" is a small integer, not a flag: MediaTek's mt6375 charger on the
+ * MP01 reports 2 (online, programmable) for a plain USB cable, and that
+ * used to read as "no charger".
+ */
+static void test_online_two_is_connected(void)
+{
+	nyx_charger_status_t st;
+
+	fixture_setup();
+
+	supply_write("pc_port", "online", "2\n");
+	g_assert_cmpint(core_charger_read_status(&st), ==, NYX_ERROR_NONE);
+	g_assert_true(st.is_charging);
+	g_assert_true(st.connected & NYX_CHARGER_PC_CONNECTED ||
+	              st.connected & NYX_CHARGER_WALL_CONNECTED);
+
+	supply_write("pc_port", "online", "0\n");
+	g_assert_cmpint(core_charger_read_status(&st), ==, NYX_ERROR_NONE);
+	g_assert_false(st.is_charging);
+
+	fixture_teardown();
+}
+
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
@@ -313,6 +337,8 @@ int main(int argc, char **argv)
 	                test_transient_connect_is_ignored);
 	g_test_add_func("/charger/usb-family-supply-counts",
 	                test_usb_family_supply_counts);
+	g_test_add_func("/charger/online-two-is-connected",
+	                test_online_two_is_connected);
 	g_test_add_func("/charger/configured-slot-wins",
 	                test_configured_slot_wins);
 	return g_test_run();

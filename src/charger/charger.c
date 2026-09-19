@@ -171,10 +171,19 @@ nyx_error_t core_charger_read_status(nyx_charger_status_t *status)
 	/* before we start to update the charger status we reset it completely */
 	memset(&gChargerStatus, 0, sizeof(nyx_charger_status_t));
 
-	usb_online      = (nyx_utils_read_value(charger_usb_sysfs_online_path) == 1);
-	ac_online       = (nyx_utils_read_value(charger_ac_sysfs_online_path) == 1);
-	touch_online    = (nyx_utils_read_value(charger_touch_sysfs_online_path) == 1);
-	wireless_online = (nyx_utils_read_value(charger_wireless_sysfs_online_path) == 1);
+	/*
+	 * "online" is not a boolean: the power_supply class documents 0 for
+	 * offline, 1 for online (fixed) and 2 for online (programmable), and
+	 * MediaTek's mt6375 charger on the MP01 reports 2 for a plain USB
+	 * cable. Comparing against 1 read that as "no charger", so batteryd
+	 * never announced the cable, the display manager never held the screen
+	 * and sleepd suspended on the charger. Anything positive is online;
+	 * nyx_utils_read_value() returns a negative number for an unreadable node.
+	 */
+	usb_online      = (nyx_utils_read_value(charger_usb_sysfs_online_path) > 0);
+	ac_online       = (nyx_utils_read_value(charger_ac_sysfs_online_path) > 0);
+	touch_online    = (nyx_utils_read_value(charger_touch_sysfs_online_path) > 0);
+	wireless_online = (nyx_utils_read_value(charger_wireless_sysfs_online_path) > 0);
 
 	/*
 	 * A USB-family supply nobody configured that reports online is a wired
@@ -189,7 +198,7 @@ nyx_error_t core_charger_read_status(nyx_charger_status_t *status)
 
 		for (i = 0; i < usb_family_online_paths->len; i++)
 		{
-			if (nyx_utils_read_value(g_ptr_array_index(usb_family_online_paths, i)) == 1)
+			if (nyx_utils_read_value(g_ptr_array_index(usb_family_online_paths, i)) > 0)
 			{
 				ac_online = true;
 				break;
