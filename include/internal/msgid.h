@@ -42,6 +42,8 @@
 #define MSGID_NYX_MOD_ENABLE_REV_ERR                                        "NYXCHG_ENABLE_REV_ERR"
 #define MSGID_NYX_MOD_CHARG_OPEN_ERR                                        "NYXCHG_OPEN_ERR"
 #define MSGID_NYX_MOD_CHARG_OUT_OF_MEMORY                                   "NYXCHG_OUT_OF_MEM"
+#define MSGID_NYX_MOD_CHARG_EDGE                                            "NYXCHG_EDGE"
+#define MSGID_NYX_MOD_CHARG_MONITOR                                         "NYXCHG_MONITOR"
 
 /** Device info generic*/
 #define MSGID_NYX_MOD_OPEN_NDUID_ERR                                        "NYXDEV_OPEN_NDUID_ERR"

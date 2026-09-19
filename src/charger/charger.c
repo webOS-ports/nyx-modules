@@ -41,6 +41,22 @@
 struct udev *udev = NULL;
 struct udev_monitor *mon = NULL;
 guint watch = 0;
+static GIOChannel *channel = NULL;
+
+/*
+ * Where power_supply nodes live. Overridable so a host-side test can point
+ * the USB-family scan at a fixture tree.
+ */
+#ifndef POWER_SUPPLY_SYSFS_ROOT
+#define POWER_SUPPLY_SYSFS_ROOT "/sys/class/power_supply"
+#endif
+
+/*
+ * How long a fresh sysfs read may lag the uevent that announced it, and how
+ * long after that we look once more. See _charger_arm_settle().
+ */
+#define CHARGER_SETTLE_MS    200
+#define CHARGER_RESETTLE_MS  1000
 
 extern nyx_device_t *nyxDev;
 extern void *charger_status_callback_context;
@@ -78,6 +94,38 @@ nyx_charger_status_t gChargerStatus =
 	.dock_serial_number = {0},
 	.is_charging = false,
 };
+
+/*
+ * What the client was last told, as opposed to gChargerStatus, which is
+ * what sysfs said the last time anyone looked.
+ *
+ * gChargerStatus is rewritten by every core_charger_read_status(), and
+ * charger_query_charger_status() is one of its callers. The uevent handler
+ * used to decide "did the charger change?" by comparing gChargerStatus
+ * before and after its own read, so a client query landing between the
+ * sysfs transition and the uevent (batteryd answers chargerStatusQuery for
+ * sleepd, the display manager and the shell) consumed the edge: the handler
+ * then saw "no change" and never fired the callback. The comparison is now
+ * against this snapshot, which only moves when the callback actually fires.
+ */
+static bool notified_charging = false;
+static bool notified_valid = false;
+
+/* Pending settle re-reads: 0 = none, 1 = the CHARGER_SETTLE_MS one, 2 = the
+ * CHARGER_RESETTLE_MS one. */
+static guint settle_source = 0;
+static int settle_stage = 0;
+static int settle_ms = CHARGER_SETTLE_MS;
+static int resettle_ms = CHARGER_RESETTLE_MS;
+
+/*
+ * "online" of every power_supply whose type starts with USB and which is not
+ * already in a configured slot. On Qualcomm smb2/smb5 parts the charger
+ * input is split over two nodes ("usb" and "pc_port") of which only one is
+ * live for a given source; a nyx.conf that names one of them, or a fallback
+ * walk that picked the wrong one, would otherwise miss the other entirely.
+ */
+static GPtrArray *usb_family_online_paths = NULL;
 
 /*
  * _parse_usb_type_bracketed - extract the bracketed token from
@@ -127,6 +175,27 @@ nyx_error_t core_charger_read_status(nyx_charger_status_t *status)
 	ac_online       = (nyx_utils_read_value(charger_ac_sysfs_online_path) == 1);
 	touch_online    = (nyx_utils_read_value(charger_touch_sysfs_online_path) == 1);
 	wireless_online = (nyx_utils_read_value(charger_wireless_sysfs_online_path) == 1);
+
+	/*
+	 * A USB-family supply nobody configured that reports online is a wired
+	 * charger all the same. It cannot be classified (no usb_type to read),
+	 * so it lands in the wall/direct slot, which is what the AC path does
+	 * for a Mains-class supply too. Only consulted when neither configured
+	 * slot is live, so it never overrides a configured classification.
+	 */
+	if (!usb_online && !ac_online && usb_family_online_paths)
+	{
+		guint i;
+
+		for (i = 0; i < usb_family_online_paths->len; i++)
+		{
+			if (nyx_utils_read_value(g_ptr_array_index(usb_family_online_paths, i)) == 1)
+			{
+				ac_online = true;
+				break;
+			}
+		}
+	}
 
 	if (usb_online)
 	{
@@ -319,12 +388,195 @@ bool _has_charger_connected_state_changed(bool old_state, bool new_state)
 	return false;
 }
 
-gboolean _handle_power_supply_event(GIOChannel *channel, GIOCondition condition,
+/*
+ * Decide whether the charger's connected state differs from what the client
+ * was last told, and tell it if so.
+ *
+ * A disconnect is reported at once: sleepd's charger veto and the display
+ * manager's on-when-connected hold both key off it, and a stale "connected"
+ * keeps the device awake on a dead battery. A connect is only reported from
+ * a settle re-read (from_settle), i.e. once it has held for settle_ms. On
+ * sargo the smb5 "usb" node was seen to report online for a moment two
+ * seconds after the cable came out, and the immediate read turned that into
+ * a connect broadcast with nothing to retract it; a connect that is real is
+ * still there 200 ms later.
+ *
+ * Returns true when the client was notified.
+ */
+static bool _charger_evaluate(const char *why, bool from_settle)
+{
+	bool now;
+
+	core_charger_read_status(NULL);
+	now = gChargerStatus.is_charging;
+
+	if (notified_valid && now == notified_charging)
+	{
+		return false;
+	}
+
+	if (now && !from_settle && notified_valid)
+	{
+		nyx_debug("charger: connect seen (%s), waiting %d ms for it to hold",
+		          why, settle_ms);
+		return false;
+	}
+
+	nyx_info(MSGID_NYX_MOD_CHARG_EDGE, 0, "charger %s (%s%s)",
+	         now ? "connected" : "disconnected", why,
+	         from_settle ? ", settle re-read" : "");
+
+	_has_charger_connected_state_changed(notified_charging, now);
+	notified_charging = now;
+	notified_valid = true;
+
+	if (charger_status_callback)
+	{
+		charger_status_callback(nyxDev, NYX_CALLBACK_STATUS_DONE,
+		                        charger_status_callback_context);
+	}
+
+	if (state_change_callback)
+	{
+		state_change_callback(nyxDev, NYX_CALLBACK_STATUS_DONE,
+		                      state_change_callback_context);
+	}
+
+	return true;
+}
+
+static gboolean _charger_settle_cb(gpointer data)
+{
+	int stage = settle_stage;
+
+	settle_source = 0;
+	settle_stage = 0;
+
+	_charger_evaluate(stage == 1 ? "settle" : "resettle", true);
+
+	if (stage == 1)
+	{
+		settle_stage = 2;
+		settle_source = g_timeout_add(resettle_ms, _charger_settle_cb, NULL);
+	}
+
+	return G_SOURCE_REMOVE;
+}
+
+/*
+ * Look at the charger again shortly, and once more after that.
+ *
+ * The kernel emits a power_supply uevent per supply that changed, and the
+ * one we are configured to read is not always among them: on sargo the
+ * charger input is "usb" (which emits uevents) mirrored into "pc_port"
+ * (which never does), and pc_port/online was seen to still read 1 when the
+ * uevents for usb, main and battery arrived, dropping to 0 within the
+ * second. With nothing else scheduled to look, that disconnect was lost for
+ * as long as nothing else on the bus changed. Every uevent therefore arms a
+ * re-read at settle_ms, which arms another at resettle_ms. A new uevent
+ * while either is pending restarts the sequence.
+ */
+static void _charger_arm_settle(void)
+{
+	if (settle_source)
+	{
+		g_source_remove(settle_source);
+	}
+
+	settle_stage = 1;
+	settle_source = g_timeout_add(settle_ms, _charger_settle_cb, NULL);
+}
+
+static void _charger_cancel_settle(void)
+{
+	if (settle_source)
+	{
+		g_source_remove(settle_source);
+		settle_source = 0;
+	}
+
+	settle_stage = 0;
+}
+
+static bool _path_is_under(const char *path, const char *dir)
+{
+	size_t n = strlen(dir);
+
+	return n > 0 && strncmp(path, dir, n) == 0 && path[n] == '/';
+}
+
+/*
+ * Collect "online" of every supply under root whose type starts with USB
+ * (USB, USB_PD, USB_DCP, ...) and that is not one of the configured slots.
+ * Rebuilt on power_supply add/remove.
+ */
+static void _scan_usb_family_supplies(const char *root)
+{
+	GDir *dir;
+	const char *name;
+
+	if (usb_family_online_paths)
+	{
+		g_ptr_array_free(usb_family_online_paths, TRUE);
+	}
+
+	usb_family_online_paths = g_ptr_array_new_with_free_func(g_free);
+
+	dir = g_dir_open(root, 0, NULL);
+
+	if (!dir)
+	{
+		return;
+	}
+
+	while ((name = g_dir_read_name(dir)) != NULL)
+	{
+		gchar *dir_path = g_build_filename(root, name, NULL);
+		gchar *type_path = g_build_filename(dir_path, "type", NULL);
+		char type[64] = "";
+
+		if (g_file_test(type_path, G_FILE_TEST_IS_REGULAR) &&
+		        FileGetString(type_path, type, sizeof(type)) == 0 &&
+		        strncmp(type, "USB", 3) == 0 &&
+		        !_path_is_under(charger_usb_sysfs_online_path, dir_path) &&
+		        !_path_is_under(charger_ac_sysfs_online_path, dir_path))
+		{
+			g_ptr_array_add(usb_family_online_paths,
+			                g_build_filename(dir_path, "online", NULL));
+			nyx_debug("charger: also watching %s/online (type %s)", dir_path, type);
+		}
+
+		g_free(type_path);
+		g_free(dir_path);
+	}
+
+	g_dir_close(dir);
+}
+
+static gboolean _charger_monitor_start(void);
+
+gboolean _handle_power_supply_event(GIOChannel *ch, GIOCondition condition,
                                     gpointer data)
 {
 	struct udev_device *dev;
-	bool fire_charger_status_cb = false;
 	bool fire_state_change_cb = false;
+
+	if (condition & (G_IO_HUP | G_IO_ERR | G_IO_NVAL))
+	{
+		/*
+		 * The netlink socket is gone. Returning TRUE here, as this used to,
+		 * would have glib call back on the dead descriptor forever and the
+		 * charger would never be heard from again; the settle timers are
+		 * the only thing that would still notice a change. Rebuild it.
+		 */
+		nyx_error(MSGID_NYX_MOD_CHARG_MONITOR, 0,
+		          "power_supply uevent socket lost (condition 0x%x), reopening",
+		          condition);
+		watch = 0;
+		_charger_monitor_start();
+		_charger_arm_settle();
+		return G_SOURCE_REMOVE;
+	}
 
 	if ((condition & G_IO_IN) == G_IO_IN)
 	{
@@ -332,8 +584,19 @@ gboolean _handle_power_supply_event(GIOChannel *channel, GIOCondition condition,
 
 		if (dev)
 		{
-			/* something related to power supply has changed; set the modified event and notify connected clients so
-			 * they can query the new status */
+			const char *action = udev_device_get_action(dev);
+			const char *sysname = udev_device_get_sysname(dev);
+
+			nyx_debug("charger: power_supply uevent %s %s",
+			          action ? action : "?", sysname ? sysname : "?");
+
+			if (action && (0 == g_strcmp0(action, "add") ||
+			               0 == g_strcmp0(action, "remove")))
+			{
+				_scan_usb_family_supplies(POWER_SUPPLY_SYSFS_ROOT);
+			}
+
+			udev_device_unref(dev);
 
 			/* Check for event changes and initiate state callback for particular events as below:
 			 * NYX_CHARGE_COMPLETE if battery/status from NULL/Charging to Full, NYX_CHARGE_RESTART if battery/status from Full to Charging,
@@ -345,23 +608,10 @@ gboolean _handle_power_supply_event(GIOChannel *channel, GIOCondition condition,
 			 * NYX_BATTERY_CRITICAL_VOLTAGE if Battery voltage below threshold - TODO: not implemented since we do not get kobject for voltage changes
 			 * NYX_BATTERY_TEMPERATURE_LIMIT if Battery temperature below/above limits - TODO: not implemented since we do not get kobject for temperature changes
 			 */
+			_charger_evaluate(sysname ? sysname : "uevent", false);
 
-			bool prev_charging = gChargerStatus.is_charging;
-			core_charger_read_status(NULL);
-
-			if (_has_charger_connected_state_changed(prev_charging,
-			        gChargerStatus.is_charging))
-			{
-				fire_charger_status_cb = true;
-				fire_state_change_cb = true;
-			}
-
-			if (fire_charger_status_cb && charger_status_callback)
-			{
-				charger_status_callback(nyxDev, NYX_CALLBACK_STATUS_DONE,
-				                        charger_status_callback_context);
-				fire_charger_status_cb = false;
-			}
+			/* The supply we read may not be the one that spoke; look again. */
+			_charger_arm_settle();
 
 			/* Keep a note of previous values */
 			char *prev_batt_status = g_strdup(battery_status);
@@ -394,6 +644,25 @@ void _charger_init_events()
 	_has_charger_state_changed(NULL, battery_status);
 	_has_battery_state_changed(0, curr_battery_state->present);
 	_has_charger_connected_state_changed(0, gChargerStatus.is_charging);
+	notified_charging = gChargerStatus.is_charging;
+	notified_valid = true;
+}
+
+/*
+ * Fill in the path of an attribute the supply may or may not have, leaving
+ * it empty when it does not. Every read of the status used to try all of
+ * them and log NYXUTIL_GET_STRING_ERR for each one missing - three lines
+ * per uevent on a supply that only has "online" - and the status is now
+ * re-read on a timer as well.
+ */
+static void _optional_attr_path(char *dst, const char *dir, const char *attr)
+{
+	snprintf(dst, PATH_LEN, "%s/%s", dir, attr);
+
+	if (!g_file_test(dst, G_FILE_TEST_EXISTS))
+	{
+		dst[0] = '\0';
+	}
 }
 
 void _detect_charger_sysfs_paths()
@@ -468,12 +737,12 @@ void _detect_charger_sysfs_paths()
 		 *                         platform driver did not detect a
 		 *                         vendor-specific variant.
 		 */
-		snprintf(charger_usb_sysfs_usb_type_path, PATH_LEN, "%s/usb_type",
-		         charger_usb_sysfs_path);
-		snprintf(charger_usb_sysfs_current_max_path, PATH_LEN, "%s/current_max",
-		         charger_usb_sysfs_path);
-		snprintf(charger_usb_sysfs_vendor_variant_path, PATH_LEN,
-		         "%s/vendor_charger_variant", charger_usb_sysfs_path);
+		_optional_attr_path(charger_usb_sysfs_usb_type_path,
+		                    charger_usb_sysfs_path, "usb_type");
+		_optional_attr_path(charger_usb_sysfs_current_max_path,
+		                    charger_usb_sysfs_path, "current_max");
+		_optional_attr_path(charger_usb_sysfs_vendor_variant_path,
+		                    charger_usb_sysfs_path, "vendor_charger_variant");
 	}
 
 	if (charger_ac_sysfs_path)
@@ -481,8 +750,8 @@ void _detect_charger_sysfs_paths()
 		snprintf(charger_ac_sysfs_online_path, PATH_LEN, "%s/online",
 		         charger_ac_sysfs_path);
 		/* Mains chargers (e.g. max8903) also expose current_max. */
-		snprintf(charger_ac_sysfs_current_max_path, PATH_LEN, "%s/current_max",
-		         charger_ac_sysfs_path);
+		_optional_attr_path(charger_ac_sysfs_current_max_path,
+		                    charger_ac_sysfs_path, "current_max");
 	}
 
 	if (charger_touch_sysfs_path)
@@ -511,15 +780,101 @@ void _detect_charger_sysfs_paths()
 	g_free(charger_wireless_sysfs_path);
 }
 
-static void _charger_cleanup(void)
+static void _charger_monitor_stop(void)
 {
-	// _charger_init sets g_io_channel_set_close_on_unref, and calls g_io_channel_unref.
-	// This leaves one ref associated with the watch, so removing the watch should close the channel.
 	if (0 != watch)
 	{
 		g_source_remove(watch);
 		watch = 0;
 	}
+
+	/*
+	 * The monitor owns the descriptor; the channel must not close it too,
+	 * or it closes whatever number the kernel has since handed out.
+	 */
+	if (NULL != channel)
+	{
+		g_io_channel_set_close_on_unref(channel, FALSE);
+		g_io_channel_unref(channel);
+		channel = NULL;
+	}
+
+	if (NULL != mon)
+	{
+		udev_monitor_unref(mon);
+		mon = NULL;
+	}
+}
+
+/*
+ * Open the kernel netlink monitor for power_supply and watch it from the
+ * caller's main loop. Called at init and again if the socket dies.
+ */
+static gboolean _charger_monitor_start(void)
+{
+	int fd;
+
+	_charger_monitor_stop();
+
+	mon = udev_monitor_new_from_netlink(udev, "kernel");
+
+	if (mon == NULL)
+	{
+		nyx_error(MSGID_NYX_MOD_NETLINK_ERR, 0,
+		          "Failed to create udev monitor for kernel events");
+		return FALSE;
+	}
+
+	if (udev_monitor_filter_add_match_subsystem_devtype(mon, "power_supply",
+	        NULL) < 0)
+	{
+		nyx_error(MSGID_NYX_MOD_CHR_SUB_ERR, 0,
+		          "Failed to setup udev filter for power_supply subsytem events");
+		_charger_monitor_stop();
+		return FALSE;
+	}
+
+	if (udev_monitor_enable_receiving(mon) < 0)
+	{
+		nyx_error(MSGID_NYX_MOD_ENABLE_REV_ERR, 0,
+		          "Failed to enable receiving kernel events for power_supply subsytem\n");
+		_charger_monitor_stop();
+		return FALSE;
+	}
+
+	fd = udev_monitor_get_fd(mon);
+
+	if (-1 == fd)
+	{
+		_charger_monitor_stop();
+		return FALSE;
+	}
+
+	channel = g_io_channel_unix_new(fd);
+
+	if (!channel)
+	{
+		_charger_monitor_stop();
+		return FALSE;
+	}
+
+	g_io_channel_set_close_on_unref(channel, FALSE);
+	watch = g_io_add_watch(channel, G_IO_IN | G_IO_HUP | G_IO_ERR | G_IO_NVAL,
+	                       _handle_power_supply_event, NULL);
+
+	if (0 == watch)
+	{
+		_charger_monitor_stop();
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
+static void _charger_cleanup(void)
+{
+	_charger_cancel_settle();
+	_charger_monitor_stop();
 
 	if (NULL != curr_battery_state)
 	{
@@ -533,10 +888,10 @@ static void _charger_cleanup(void)
 		battery_status = NULL;
 	}
 
-	if (NULL != mon)
+	if (NULL != usb_family_online_paths)
 	{
-		udev_monitor_filter_remove(mon);
-		mon = NULL;
+		g_ptr_array_free(usb_family_online_paths, TRUE);
+		usb_family_online_paths = NULL;
 	}
 
 	if (NULL != udev)
@@ -545,14 +900,50 @@ static void _charger_cleanup(void)
 		udev = NULL;
 	}
 
+	notified_valid = false;
+
 	return;
+}
+
+/* [module.charger] settle_ms= / resettle_ms= in nyx.conf override the defaults. */
+static void _charger_read_settle_conf(void)
+{
+	gchar *value;
+
+	settle_ms = CHARGER_SETTLE_MS;
+	resettle_ms = CHARGER_RESETTLE_MS;
+
+	value = nyx_conf_get_path("module.charger", "settle_ms");
+
+	if (value)
+	{
+		int v = atoi(value);
+
+		if (v > 0)
+		{
+			settle_ms = v;
+		}
+
+		g_free(value);
+	}
+
+	value = nyx_conf_get_path("module.charger", "resettle_ms");
+
+	if (value)
+	{
+		int v = atoi(value);
+
+		if (v > 0)
+		{
+			resettle_ms = v;
+		}
+
+		g_free(value);
+	}
 }
 
 nyx_error_t core_charger_init(void)
 {
-	int fd;
-	GIOChannel *channel = NULL;
-
 	udev = udev_new();
 
 	if (!udev)
@@ -562,35 +953,10 @@ nyx_error_t core_charger_init(void)
 		return NYX_ERROR_GENERIC;
 	}
 
-	mon = udev_monitor_new_from_netlink(udev, "kernel");
-
-	if (mon == NULL)
-	{
-		nyx_error(MSGID_NYX_MOD_NETLINK_ERR, 0,
-		          "Failed to create udev monitor for kernel events");
-		_charger_cleanup();
-		return NYX_ERROR_GENERIC;
-	}
-
-	if (udev_monitor_filter_add_match_subsystem_devtype(mon, "power_supply",
-	        NULL) < 0)
-	{
-		nyx_error(MSGID_NYX_MOD_CHR_SUB_ERR, 0,
-		          "Failed to setup udev filter for power_supply subsytem events");
-		_charger_cleanup();
-		return NYX_ERROR_GENERIC;
-	}
-
-	if (udev_monitor_enable_receiving(mon) < 0)
-	{
-		nyx_error(MSGID_NYX_MOD_ENABLE_REV_ERR, 0,
-		          "Failed to enable receiving kernel events for power_supply subsytem\n");
-		_charger_cleanup();
-		return NYX_ERROR_GENERIC;
-	}
-
 	/* Initialize charger sysfs paths */
 	_detect_charger_sysfs_paths();
+	_charger_read_settle_conf();
+	_scan_usb_family_supplies(POWER_SUPPLY_SYSFS_ROOT);
 	/* Initialize battery and charger status */
 	core_charger_read_status(NULL);
 	curr_battery_state = (nyx_battery_status_t *) malloc(sizeof(
@@ -616,32 +982,7 @@ nyx_error_t core_charger_init(void)
 	_charger_init_events();
 
 	/* Setup io watch for uevents */
-	fd = udev_monitor_get_fd(mon);
-
-	if (-1 == fd)
-	{
-		_charger_cleanup();
-		return NYX_ERROR_GENERIC;
-	}
-
-	channel = g_io_channel_unix_new(fd);
-
-	if (!channel)
-	{
-		_charger_cleanup();
-		return NYX_ERROR_GENERIC;
-	}
-
-	/* add watch event (which adds a ref) before calling g_io_channel_unref */
-	watch = g_io_add_watch(channel, G_IO_IN | G_IO_HUP | G_IO_NVAL,
-	                       _handle_power_supply_event, NULL);
-
-	/* Remove the ref from g_io_channel_unix_new so we won't leak the channel if g_io_add_watch failed */
-	/* watch holds another ref which is removed in _charger_cleanup */
-	g_io_channel_set_close_on_unref(channel, TRUE);
-	g_io_channel_unref(channel);
-
-	if (0 == watch)
+	if (!_charger_monitor_start())
 	{
 		_charger_cleanup();
 		return NYX_ERROR_GENERIC;

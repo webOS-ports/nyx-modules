@@ -20,3 +20,7 @@ webos_add_test(test_chargerlib
 webos_add_test(test_dev_charger
 		SOURCES test_dev_charger.c
 		LIBRARIES ${NYXLIB_LDFLAGS} ${GLIB2_LDFLAGS} ${PMLOG_LDFLAGS} -ldl -lrt -lpthread -lm)
+# Host-runnable as well: see run-host-tests.sh
+webos_add_test(test_charger_resync
+		SOURCES test_charger_resync.c ../../utils/utils.c
+		LIBRARIES ${NYXLIB_LDFLAGS} ${GLIB2_LDFLAGS} ${PMLOG_LDFLAGS} ${UDEV_LDFLAGS} -ldl -lrt -lpthread -lm)
