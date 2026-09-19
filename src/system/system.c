@@ -33,7 +33,9 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <glib.h>
+#include <gio/gio.h>
 #include "rtc.h"
+#include "nyx_conf.h"
 
 #include <nyx/nyx_module.h>
 #include <nyx/module/nyx_utils.h>
@@ -499,11 +501,273 @@ static double boottime_now(void)
 	return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 
+/*
+ * Which component performs the final kernel write.
+ *
+ * On a mainline phone the daemons that must prepare hardware for sleep only
+ * hear about a suspend from systemd-logind: eg25-manager (Quectel modem) holds
+ * a logind "delay" inhibitor and runs its AT sequence on PrepareForSleep, and
+ * ModemManager, NetworkManager and the system-sleep hooks work the same way.
+ * A direct write to /sys/power/state is invisible to all of them; measured on
+ * a PinePhone Pro that meant the modem re-enumerated on USB after every
+ * suspend and woke the phone again three seconds later, 1027 times in an
+ * hour, where one suspend through logind slept 52 minutes untouched.
+ *
+ * sleepd keeps the policy, the RTC alarm and the wakeup_count handshake; only
+ * the write moves. The handshake still protects the logind path: the count
+ * written back is what the kernel checks when logind's helper enters suspend,
+ * so an event that races the inhibitor phase still aborts the attempt.
+ *
+ * [module.system] suspend_backend = auto | kernel | logind (nyx.conf).
+ * "auto" (the default) uses logind when the machine has no Android container
+ * (Halium prepares its own side) and at least one logind sleep-delay
+ * inhibitor is registered, i.e. someone is actually listening.
+ */
+#define LOGIND_NAME   "org.freedesktop.login1"
+#define LOGIND_PATH   "/org/freedesktop/login1"
+#define LOGIND_IFACE  "org.freedesktop.login1.Manager"
+#define HALIUM_CONTAINER_CONFIG "/var/lib/lxc/android/config"
+/* logind has InhibitDelayMaxSec (5 s by default) to run the inhibitors. */
+#define LOGIND_ENTRY_TIMEOUT_MS 20000
+
+enum suspend_backend { BACKEND_KERNEL, BACKEND_LOGIND };
+
+static bool logind_has_sleep_delay_inhibitor(GDBusConnection *bus)
+{
+	GError *err = NULL;
+	GVariant *reply;
+	GVariantIter *iter;
+	const char *what, *who, *why, *mode;
+	guint32 uid, pid;
+	bool found = false;
+
+	reply = g_dbus_connection_call_sync(bus, LOGIND_NAME, LOGIND_PATH, LOGIND_IFACE,
+	                                    "ListInhibitors", NULL,
+	                                    G_VARIANT_TYPE("(a(ssssuu))"),
+	                                    G_DBUS_CALL_FLAGS_NONE, 2000, NULL, &err);
+	if (!reply)
+	{
+		nyx_debug("system: logind ListInhibitors failed: %s", err ? err->message : "?");
+		g_clear_error(&err);
+		return false;
+	}
+
+	g_variant_get(reply, "(a(ssssuu))", &iter);
+	while (g_variant_iter_loop(iter, "(&s&s&s&suu)", &what, &who, &why, &mode, &uid, &pid))
+	{
+		if (strstr(what, "sleep") && g_strcmp0(mode, "delay") == 0)
+		{
+			nyx_debug("system: logind sleep-delay inhibitor held by %s (%s)", who, why);
+			found = true;
+		}
+	}
+	g_variant_iter_free(iter);
+	g_variant_unref(reply);
+	return found;
+}
+
+static enum suspend_backend choose_suspend_backend(GDBusConnection **bus_out)
+{
+	gchar *conf = nyx_conf_get_path("module.system", "suspend_backend");
+	enum suspend_backend backend = BACKEND_KERNEL;
+	GDBusConnection *bus = NULL;
+	GError *err = NULL;
+
+	*bus_out = NULL;
+
+	if (conf && g_strcmp0(conf, "kernel") == 0)
+	{
+		g_free(conf);
+		return BACKEND_KERNEL;
+	}
+
+	if (!conf || g_strcmp0(conf, "auto") == 0)
+	{
+		if (access(HALIUM_CONTAINER_CONFIG, F_OK) == 0)
+		{
+			g_free(conf);
+			return BACKEND_KERNEL;
+		}
+	}
+	else if (g_strcmp0(conf, "logind") != 0)
+	{
+		nyx_info(MSGID_NYX_MOD_SYSTEM_SUSPEND, 0,
+		         "unknown suspend_backend '%s', using the kernel directly", conf);
+		g_free(conf);
+		return BACKEND_KERNEL;
+	}
+
+	bus = g_bus_get_sync(G_BUS_TYPE_SYSTEM, NULL, &err);
+	if (!bus)
+	{
+		nyx_info(MSGID_NYX_MOD_SYSTEM_SUSPEND, 0,
+		         "system bus unavailable (%s), suspending through the kernel",
+		         err ? err->message : "?");
+		g_clear_error(&err);
+		g_free(conf);
+		return BACKEND_KERNEL;
+	}
+
+	/* "logind" forces it; "auto" wants a listener to justify the detour. */
+	if ((conf && g_strcmp0(conf, "logind") == 0) || logind_has_sleep_delay_inhibitor(bus))
+	{
+		backend = BACKEND_LOGIND;
+		*bus_out = bus;
+	}
+	else
+	{
+		g_object_unref(bus);
+	}
+	g_free(conf);
+	return backend;
+}
+
+static long read_suspend_success_count(void)
+{
+	char *contents = NULL;
+	long n = -1;
+
+	if (g_file_get_contents("/sys/power/suspend_stats/success", &contents, NULL, NULL))
+	{
+		n = strtol(contents, NULL, 10);
+	}
+	else if (g_file_get_contents("/sys/kernel/debug/suspend_stats", &contents, NULL, NULL))
+	{
+		char *p = strstr(contents, "success:");
+		if (p)
+		{
+			n = strtol(p + strlen("success:"), NULL, 10);
+		}
+	}
+	g_free(contents);
+	return n;
+}
+
+struct logind_wait
+{
+	GMainLoop *loop;
+	int phase;        /* 0: waiting for PrepareForSleep(true), 1: asleep, 2: resumed */
+	bool timed_out;
+};
+
+static void on_prepare_for_sleep(GDBusConnection *bus, const gchar *sender,
+                                 const gchar *path, const gchar *iface,
+                                 const gchar *signal, GVariant *params, gpointer data)
+{
+	struct logind_wait *w = data;
+	gboolean start = FALSE;
+
+	g_variant_get(params, "(b)", &start);
+	if (start)
+	{
+		w->phase = 1;
+	}
+	else if (w->phase == 1)
+	{
+		w->phase = 2;
+		g_main_loop_quit(w->loop);
+	}
+}
+
+static gboolean on_logind_entry_timeout(gpointer data)
+{
+	struct logind_wait *w = data;
+
+	if (w->phase == 0)
+	{
+		w->timed_out = true;
+		g_main_loop_quit(w->loop);
+	}
+	return G_SOURCE_REMOVE;
+}
+
+/*
+ * Ask logind to suspend and block until it reports the resume. Returns 0 when
+ * the kernel counted a successful suspend, -EAGAIN when logind went through
+ * the motions but the kernel aborted (a wakeup raced the inhibitor phase), or
+ * -EIO when logind could not be asked at all (the caller then falls back to
+ * the kernel write; the handshake is still valid).
+ */
+static int suspend_via_logind(GDBusConnection *bus, double *asleep)
+{
+	GMainContext *ctx = g_main_context_new();
+	struct logind_wait w = { .phase = 0, .timed_out = false };
+	GError *err = NULL;
+	GVariant *reply;
+	GSource *timeout;
+	guint sub;
+	long before, after;
+	double t0;
+	int ret;
+
+	g_main_context_push_thread_default(ctx);
+	w.loop = g_main_loop_new(ctx, FALSE);
+
+	/* Subscribed on this thread's context, so the loop below delivers it. */
+	sub = g_dbus_connection_signal_subscribe(bus, LOGIND_NAME, LOGIND_IFACE,
+	                                         "PrepareForSleep", LOGIND_PATH, NULL,
+	                                         G_DBUS_SIGNAL_FLAGS_NONE,
+	                                         on_prepare_for_sleep, &w, NULL);
+
+	before = read_suspend_success_count();
+	t0 = boottime_now();
+
+	reply = g_dbus_connection_call_sync(bus, LOGIND_NAME, LOGIND_PATH, LOGIND_IFACE,
+	                                    "Suspend", g_variant_new("(b)", FALSE), NULL,
+	                                    G_DBUS_CALL_FLAGS_NONE, 5000, NULL, &err);
+	if (!reply)
+	{
+		nyx_info(MSGID_NYX_MOD_SYSTEM_SUSPEND, 0,
+		         "logind Suspend refused: %s", err ? err->message : "?");
+		g_clear_error(&err);
+		ret = -EIO;
+		goto out;
+	}
+	g_variant_unref(reply);
+
+	timeout = g_timeout_source_new(LOGIND_ENTRY_TIMEOUT_MS);
+	g_source_set_callback(timeout, on_logind_entry_timeout, &w, NULL);
+	g_source_attach(timeout, ctx);
+	g_source_unref(timeout);
+
+	/* Runs through the inhibitor phase, the sleep itself, and the resume. */
+	g_main_loop_run(w.loop);
+
+	if (w.timed_out)
+	{
+		nyx_info(MSGID_NYX_MOD_SYSTEM_SUSPEND, 0,
+		         "not suspended: logind did not enter sleep within %d ms",
+		         LOGIND_ENTRY_TIMEOUT_MS);
+		ret = -EAGAIN;
+		goto out;
+	}
+
+	after = read_suspend_success_count();
+	*asleep = boottime_now() - t0;
+	if (before >= 0 && after >= 0 && after <= before)
+	{
+		nyx_info(MSGID_NYX_MOD_SYSTEM_SUSPEND, 0,
+		         "not suspended: logind ran the sleep but the kernel aborted it");
+		ret = -EAGAIN;
+		goto out;
+	}
+	ret = 0;
+
+out:
+	g_dbus_connection_signal_unsubscribe(bus, sub);
+	g_main_loop_unref(w.loop);
+	g_main_context_pop_thread_default(ctx);
+	g_main_context_unref(ctx);
+	return ret;
+}
+
 static nyx_error_t suspend_blocking(nyx_device_handle_t handle, bool *success)
 {
 	char count[32];
 	double t0;
 	int ret;
+	enum suspend_backend backend;
+	GDBusConnection *bus = NULL;
 
 	if (handle != nyxDev)
 	{
@@ -552,6 +816,30 @@ static nyx_error_t suspend_blocking(nyx_device_handle_t handle, bool *success)
 			         count, strerror(-ret), -ret);
 			return NYX_ERROR_NONE;
 		}
+	}
+
+	backend = choose_suspend_backend(&bus);
+	if (backend == BACKEND_LOGIND)
+	{
+		double asleep = 0.0;
+
+		ret = suspend_via_logind(bus, &asleep);
+		g_object_unref(bus);
+		if (ret == -EAGAIN)
+		{
+			return NYX_ERROR_NONE;
+		}
+		if (ret == 0)
+		{
+			nyx_info(MSGID_NYX_MOD_SYSTEM_SUSPEND, 0,
+			         "suspended through logind and resumed after %.1f s", asleep);
+			if (success)
+			{
+				*success = true;
+			}
+			return NYX_ERROR_NONE;
+		}
+		/* logind could not be asked: the handshake still holds, write ourselves. */
 	}
 
 	t0 = boottime_now();
