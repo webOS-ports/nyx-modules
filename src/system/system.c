@@ -820,10 +820,11 @@ static gboolean on_logind_entry_timeout(gpointer data)
 
 /*
  * Ask logind to suspend and block until it reports the resume. Returns 0 when
- * the kernel counted a successful suspend, -EAGAIN when logind went through
- * the motions but the kernel aborted (a wakeup raced the inhibitor phase), or
- * -EIO when logind could not be asked at all (the caller then falls back to
- * the kernel write; the handshake is still valid).
+ * the kernel counted a successful suspend, -EAGAIN when the sleep did not
+ * happen but will be worth retrying (the kernel aborted because a wakeup
+ * raced the inhibitor phase, or something holds a block inhibitor), or -EIO
+ * when logind could not be asked at all (the caller then falls back to the
+ * kernel write; the handshake is still valid).
  */
 static int suspend_via_logind(GDBusConnection *bus, double *asleep)
 {
@@ -854,10 +855,32 @@ static int suspend_via_logind(GDBusConnection *bus, double *asleep)
 	                                    G_DBUS_CALL_FLAGS_NONE, 5000, NULL, &err);
 	if (!reply)
 	{
+		const char *remote = err ? g_dbus_error_get_remote_error(err) : NULL;
+		/*
+		 * A block inhibitor is a deliberate "not now" from a service that
+		 * knows something we do not, and going around it is exactly what
+		 * the logind path exists to avoid. On the PinePhone Pro,
+		 * eg25-manager takes a blocking sleep inhibitor while it
+		 * reconfigures the modem after a resume ("taking systemd sleep
+		 * inhibitor (blocking)"); suspending through the kernel write
+		 * during that window leaves the modem unprepared, and the phone
+		 * does not come back - measured 2026-09-20, the third suspend of
+		 * the boot entered deep and never resumed, three entries against
+		 * two exits, and it needed a power cycle.
+		 *
+		 * So treat a refusal as "retry later", not as "logind is absent".
+		 * Only a logind that cannot be reached at all falls back.
+		 */
+		bool denied = (remote != NULL) &&
+		              (g_strcmp0(remote, "org.freedesktop.DBus.Error.AccessDenied") == 0 ||
+		               g_strcmp0(remote, "org.freedesktop.login1.OperationInProgress") == 0);
+
 		nyx_info(MSGID_NYX_MOD_SYSTEM_SUSPEND, 0,
-		         "logind Suspend refused: %s", err ? err->message : "?");
+		         "logind Suspend refused%s: %s", denied ? ", backing off" : "",
+		         err ? err->message : "?");
+		g_free((char *) remote);
 		g_clear_error(&err);
-		ret = -EIO;
+		ret = denied ? -EAGAIN : -EIO;
 		goto out;
 	}
 	g_variant_unref(reply);
