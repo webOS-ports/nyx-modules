@@ -16,4 +16,4 @@
 
 webos_build_nyx_module(SystemMain
                        SOURCES system.c rtc.c
-                       LIBRARIES ${GLIB2_LDFLAGS} ${PMLOG_LDFLAGS} ${NYXLIB_LDFLAGS} -lrt -lpthread)
+                       LIBRARIES ${GLIB2_LDFLAGS} ${GIO_LDFLAGS} ${PMLOG_LDFLAGS} ${NYXLIB_LDFLAGS} -lrt -lpthread)

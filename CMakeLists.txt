@@ -32,10 +32,12 @@ webos_add_compiler_flags(ALL ${PMLOG_CFLAGS_OTHER})
 
 include_directories(include/internal)
 
+# Which modules this provider owns. Parsed out of NYX_MODULES_REQUIRED, which
+# the recipe passes in from nyx-modules-machines.inc.
+#
+# A per-machine src/machine.cmake used to be copied in on top of this to
+# override the result. It is gone: every machine is described in that .inc now,
+# one line each, which is also what lets a new machine build without one.
 webos_nyx_module_provider(OW BATTERY CHARGER DEVICEINFO OSINFO SYSTEM DISPLAY SECURITY SECURITY2 GPS CEC MSMMTP ALS LED HAPTICS KEYS TOUCHPANEL TOUCHPANEL_MTDEV)
-
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/machine.cmake)
-	include(${CMAKE_CURRENT_SOURCE_DIR}/src/machine.cmake)
-endif()
 
 add_subdirectory(src)

@@ -407,24 +407,45 @@ nyx_error_t haptics_vibrate(nyx_device_t *device, nyx_haptics_configuration_t co
 	}
 
 	if (haptics_device->fd_ioctl>0) {
-		int ff_duration = one_shot > 0 ? one_shot : (gint) (pulses * (delay_on + delay_off));
+		int play_count, total_ms;
 
-		/* upload rumble effect */
+		/* Clear any previous effect and timer BEFORE starting the new one.
+		 * Doing this after the play (as it was) wrote the EV_FF stop event and
+		 * EVIOCRMFF for the effect we had just started, microseconds later, so
+		 * the motor never perceptibly moved - vibration appeared dead on
+		 * FF/gpio-vibrator devices (e.g. PinePhone Pro). */
+		clean_timeouts(haptics_device);
+
+		/* Build the rumble effect. A pattern (alert/ringtone/period-based) is
+		 * rendered by the effect's own repeat: replay.length is one buzz,
+		 * replay.delay the gap before each, and playing with value=pulses
+		 * repeats it - so the FF path pulses like the leds path instead of
+		 * running one continuous buzz for the whole duration. */
 		memset(&haptics_device->ff, 0, sizeof(haptics_device->ff));
 		haptics_device->ff.type = FF_RUMBLE,
 		haptics_device->ff.id = -1;
-		haptics_device->ff.replay.length = ff_duration;
-		haptics_device->ff.replay.delay = 0;
+		if (one_shot > 0) {
+			haptics_device->ff.replay.length = one_shot;
+			haptics_device->ff.replay.delay = 0;
+			play_count = 1;
+			total_ms = one_shot;
+		}
+		else {
+			haptics_device->ff.replay.length = delay_on;
+			haptics_device->ff.replay.delay = delay_off;
+			play_count = pulses;
+			total_ms = pulses * (delay_on + delay_off);
+		}
 		haptics_device->ff.u.rumble.strong_magnitude = 0xc000;
 		haptics_device->ff.u.rumble.weak_magnitude = 0;
 		ioctl(haptics_device->fd_ioctl, EVIOCSFF, &(haptics_device->ff));
 
-		/* play vibration pattern */
+		/* play - value is the repeat count */
 		struct input_event ff_event;
 		memset(&ff_event, 0, sizeof(ff_event));
 		ff_event.type = EV_FF;
 		ff_event.code = haptics_device->ff.id;
-		ff_event.value = 1;
+		ff_event.value = play_count;
 
 		if (write(haptics_device->fd_ioctl, &ff_event, sizeof ff_event) < 0)
 			nyx_debug("Failed to write EV_FF play event: %s", strerror(errno));
@@ -432,8 +453,7 @@ nyx_error_t haptics_vibrate(nyx_device_t *device, nyx_haptics_configuration_t co
 		/* timeout to stop vibration - tracked so cancel/close can
 		 * remove it; an untracked watch would fire after the device
 		 * is freed */
-		clean_timeouts(haptics_device);
-		haptics_device->fulltimeoutwatch = g_timeout_add(ff_duration, vibrate_timeout_cb, device);
+		haptics_device->fulltimeoutwatch = g_timeout_add(total_ms, vibrate_timeout_cb, device);
     }
 	else if (one_shot > 0) {
 		if (vibrate_oneshot(haptics_device, one_shot) == FALSE)

@@ -42,6 +42,8 @@
 #define MSGID_NYX_MOD_ENABLE_REV_ERR                                        "NYXCHG_ENABLE_REV_ERR"
 #define MSGID_NYX_MOD_CHARG_OPEN_ERR                                        "NYXCHG_OPEN_ERR"
 #define MSGID_NYX_MOD_CHARG_OUT_OF_MEMORY                                   "NYXCHG_OUT_OF_MEM"
+#define MSGID_NYX_MOD_CHARG_EDGE                                            "NYXCHG_EDGE"
+#define MSGID_NYX_MOD_CHARG_MONITOR                                         "NYXCHG_MONITOR"
 
 /** Device info generic*/
 #define MSGID_NYX_MOD_OPEN_NDUID_ERR                                        "NYXDEV_OPEN_NDUID_ERR"
@@ -69,6 +71,7 @@
 /** System */
 #define MSGID_NYX_MOD_SYSTEM_OUT_OF_MEMORY                                  "NYXSYS_OUT_OF_MEM"
 #define MSGID_NYX_MOD_SYSTEM_OPEN_ERR                                       "NYXSYS_OPEN_ERR"
+#define MSGID_NYX_MOD_SYSTEM_SUSPEND                                        "NYXSYS_SUSPEND"
 
 /** Mass Storage Mode - MTP */
 #define MSGID_NYX_MOD_MSMMTP_OPEN_ERR                                       "NYXMSM_OPEN_ERR"
@@ -77,6 +80,7 @@
 #define MSGID_NYX_MOD_ALS_ENABLE_ERR                                        "NYXALS_ENABLE_ERR"
 #define MSGID_NYX_MOD_ALS_DISABLE_ERR                                       "NYXALS_DISABLE_ERR"
 #define MSGID_NYX_MOD_ALS_READ_EVENT_ERR                                    "NYXALS_READ_EVENT_ERR"
+#define MSGID_NYX_MOD_ALS_OPEN_ERR                                          "NYXALS_OPEN_ERR"
 
 /** LED Controller */
 #define MSGID_NYX_MOD_LED_NODEVICE_ERR                                      "NYXLED_NODEVICE_ERR"
