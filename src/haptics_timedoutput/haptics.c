@@ -409,6 +409,13 @@ nyx_error_t haptics_vibrate(nyx_device_t *device, nyx_haptics_configuration_t co
 	if (haptics_device->fd_ioctl>0) {
 		int ff_duration = one_shot > 0 ? one_shot : (gint) (pulses * (delay_on + delay_off));
 
+		/* Clear any previous effect and timer BEFORE starting the new one.
+		 * Doing this after the play (as it was) wrote the EV_FF stop event and
+		 * EVIOCRMFF for the effect we had just started, microseconds later, so
+		 * the motor never perceptibly moved - vibration appeared dead on
+		 * FF/gpio-vibrator devices (e.g. PinePhone Pro). */
+		clean_timeouts(haptics_device);
+
 		/* upload rumble effect */
 		memset(&haptics_device->ff, 0, sizeof(haptics_device->ff));
 		haptics_device->ff.type = FF_RUMBLE,
@@ -432,7 +439,6 @@ nyx_error_t haptics_vibrate(nyx_device_t *device, nyx_haptics_configuration_t co
 		/* timeout to stop vibration - tracked so cancel/close can
 		 * remove it; an untracked watch would fire after the device
 		 * is freed */
-		clean_timeouts(haptics_device);
 		haptics_device->fulltimeoutwatch = g_timeout_add(ff_duration, vibrate_timeout_cb, device);
     }
 	else if (one_shot > 0) {
