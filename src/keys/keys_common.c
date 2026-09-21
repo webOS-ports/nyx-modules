@@ -133,23 +133,75 @@ cleanup:
     return result;
 }
 
+/*
+ * Close descriptors the kernel has hung up on.
+ *
+ * When an input device disappears -- the detachable keyboard re-enumerating
+ * after the USB controller is reinitialised on resume, for instance -- its
+ * open descriptor stays valid but reports POLLERR|POLLHUP forever.  Those bits
+ * are not cleared by polling and there is nothing left to read, so a poll()
+ * that only tests the return value never blocks again: the notifier thread
+ * wakes, signals the main loop, the main loop finds no POLLIN, reports itself
+ * drained, and the cycle repeats for as long as the process lives.  Measured
+ * at ~2500 rounds a second, better than a full CPU core, on a PineTab2 whose
+ * keyboard had re-enumerated once.
+ *
+ * The slot is kept and its descriptor set to -1 rather than removed, because
+ * poll() ignores a negative fd and the configured path stays on record for
+ * whoever wants to reopen it.
+ */
+static void reap_dead_event_fds(struct pollfd *fds)
+{
+    int n;
+
+    for (n = 0; n < num_keypad_event_fd; n++) {
+        if (keypad_event_fd[n] < 0)
+            continue;
+        if (!(fds[n].revents & (POLLERR | POLLHUP | POLLNVAL)))
+            continue;
+
+        nyx_error(MSGID_NYX_MOD_KEY_EVENT_ERR, 0,
+                  "input node %d hung up (revents 0x%x), closing it",
+                  keypad_event_fd[n], fds[n].revents);
+        close(keypad_event_fd[n]);
+        keypad_event_fd[n] = -1;
+    }
+}
+
 void *notifier_thread_func(void *user_data)
 {
     struct pollfd fds[MAX_INPUT_NODES];
-    int event = 1, n;
-
-    for (n = 0; n < num_keypad_event_fd; n++) {
-        fds[n].fd = keypad_event_fd[n];
-        fds[n].events = POLLIN;
-    }
+    int event = 1, n, have_input;
 
     while (1) {
         /* Do not poll again until the main thread has read what the last
          * notification was about, or this spins on the same pending event. */
         notifier_wait_until_drained();
 
+        /* Rebuilt every pass: reap_dead_event_fds() can retire a descriptor,
+         * and a retired slot polls as -1, which poll() skips. */
+        for (n = 0; n < num_keypad_event_fd; n++) {
+            fds[n].fd = keypad_event_fd[n];
+            fds[n].events = POLLIN;
+            fds[n].revents = 0;
+        }
+
         int ret_val = poll(fds, num_keypad_event_fd, -1);
         if (ret_val <= 0)
+            continue;
+
+        have_input = 0;
+        for (n = 0; n < num_keypad_event_fd; n++) {
+            if (fds[n].revents & POLLIN)
+                have_input = 1;
+        }
+
+        reap_dead_event_fds(fds);
+
+        /* A descriptor hung up and has now been retired.  Waking the main
+         * thread would only buy it an empty read, so go straight back to
+         * poll(), which can block properly on what is left. */
+        if (!have_input)
             continue;
 
         nyx_debug("Got new input event; waking up main thread ..");
@@ -372,6 +424,10 @@ int read_input_event(InputEvent_t* pEvents, int maxEvents)
             }
         }
     }
+
+	/* Same hangup sweep as the notifier thread: whichever side sees a dead
+	 * descriptor first is the one that retires it. */
+	reap_dead_event_fds(fds);
 
 	/* Descriptors are drained now, so the notifier thread may poll again. */
 	notifier_mark_drained();
