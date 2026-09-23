@@ -111,6 +111,14 @@ nyx_charger_status_t gChargerStatus =
 static bool notified_charging = false;
 static bool notified_valid = false;
 
+/*
+ * Consecutive uevent wakeups that produced no device. See
+ * _handle_power_supply_event(): a handful is normal (a filtered message),
+ * a run of them means the socket is wedged and has to be rebuilt.
+ */
+static int empty_reads = 0;
+#define CHARGER_MAX_EMPTY_READS 16
+
 /* Pending settle re-reads: 0 = none, 1 = the CHARGER_SETTLE_MS one, 2 = the
  * CHARGER_RESETTLE_MS one. */
 static guint settle_source = 0;
@@ -591,10 +599,64 @@ gboolean _handle_power_supply_event(GIOChannel *ch, GIOCondition condition,
 	{
 		dev = udev_monitor_receive_device(mon);
 
-		if (dev)
+		if (!dev)
+		{
+			/*
+			 * Readable, but nothing came back. udev_monitor_receive_device()
+			 * returns NULL for a message that fails its filter, for a recv
+			 * error, and for a socket that has gone bad - and in that last
+			 * case the descriptor stays readable for ever. Returning TRUE
+			 * then has glib re-dispatch us immediately, on a descriptor that
+			 * will never yield a device again: a tight loop that burns a
+			 * whole core and starves every other source in the process.
+			 *
+			 * Measured on a PinePhone Pro 2026-09-23: batteryd pinned at
+			 * 100% of a CPU with 21h32m of CPU time against 20 minutes for
+			 * the next-busiest process on the device, and its luna methods
+			 * answering nothing at all - com.webos.service.battery/status
+			 * and /chargerStatusQuery both silent while
+			 * com.palm.display/control/status answered in 3.00 ms. With
+			 * batteryd unable to answer or broadcast, sleepd never learned
+			 * the charger state and suspend broke in both directions: it
+			 * refused to suspend on battery (chargerIsConnected stuck true)
+			 * and suspended while charging (stuck false).
+			 *
+			 * A filtered message is normal and transient, so tolerate a few
+			 * in a row; a descriptor that keeps claiming to be readable with
+			 * nothing to give is broken, so rebuild the monitor exactly as
+			 * the HUP path above does.
+			 */
+			if (++empty_reads < CHARGER_MAX_EMPTY_READS)
+			{
+				return TRUE;
+			}
+
+			nyx_error(MSGID_NYX_MOD_CHARG_MONITOR, 0,
+			          "power_supply uevent socket readable but empty %d times, reopening",
+			          empty_reads);
+			empty_reads = 0;
+			watch = 0;
+			_charger_monitor_start();
+			_charger_arm_settle();
+			return G_SOURCE_REMOVE;
+		}
+
+		empty_reads = 0;
+
 		{
 			const char *action = udev_device_get_action(dev);
 			const char *sysname = udev_device_get_sysname(dev);
+			char sysname_copy[64];
+
+			/*
+			 * sysname points into dev and does not outlive the unref below,
+			 * but it is still wanted afterwards as the reason string for the
+			 * edge log. Reading it after the free put uninitialised bytes
+			 * straight into the journal - "charger disconnected (\u042e..."
+			 * was what gave this away on the PinePhone Pro. Take a copy.
+			 */
+			g_strlcpy(sysname_copy, sysname ? sysname : "uevent",
+			          sizeof(sysname_copy));
 
 			nyx_debug("charger: power_supply uevent %s %s",
 			          action ? action : "?", sysname ? sysname : "?");
@@ -617,7 +679,7 @@ gboolean _handle_power_supply_event(GIOChannel *ch, GIOCondition condition,
 			 * NYX_BATTERY_CRITICAL_VOLTAGE if Battery voltage below threshold - TODO: not implemented since we do not get kobject for voltage changes
 			 * NYX_BATTERY_TEMPERATURE_LIMIT if Battery temperature below/above limits - TODO: not implemented since we do not get kobject for temperature changes
 			 */
-			_charger_evaluate(sysname ? sysname : "uevent", false);
+			_charger_evaluate(sysname_copy, false);
 
 			/* The supply we read may not be the one that spoke; look again. */
 			_charger_arm_settle();
