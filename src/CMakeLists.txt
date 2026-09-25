@@ -141,3 +141,7 @@ if(NYXMOD_OW_LEDTORCH)
     add_subdirectory(led_torch)
 endif()
 add_subdirectory(led_test)
+
+# Drives NYX_DEVICE_SYSTEM's RTC and alarm calls on a device; the host-side
+# counterparts live in system/tests.
+add_subdirectory(system_test)

@@ -37,6 +37,7 @@
 #include "wait.h"
 //#include "debug.h"
 #include "rtc.h"
+#include "alarm.h"
 
 #ifdef BUILD_FOR_DESKTOP
 #define DEV_RTC_IMPLEMENTED 0
@@ -136,6 +137,14 @@ rtc_open(void)
 		}
 	}
 
+	/*
+	 * A CLOCK_REALTIME_ALARM timer, armed alongside the RTC alarm by
+	 * rtc_set_alarm_time(). Failing to get one is not fatal - the RTC alarm
+	 * still works - so the return value is deliberately not checked here;
+	 * alarm.c logs which clock it ended up with.
+	 */
+	wakeup_alarm_open();
+
 	return true;
 #else
 	g_debug("Powerd RTC code disabled");
@@ -211,6 +220,13 @@ rtc_add_watch(RtcAlarmFunc func)
 {
 #if DEV_RTC_IMPLEMENTED
 
+	/*
+	 * The wakeup timer reports expiries to the same callback. On a device whose
+	 * RTC cannot be set - a Pixel 3a, say - it is the only one of the two that
+	 * can fire at the right time.
+	 */
+	wakeup_alarm_set_callback((WakeupAlarmFunc) func);
+
 	if (rtc_channel == NULL)
 	{
 		rtc_channel = g_io_channel_unix_new(rtc_fd);
@@ -229,6 +245,8 @@ bool
 rtc_clear_watch(void)
 {
 #if DEV_RTC_IMPLEMENTED
+
+	wakeup_alarm_set_callback(NULL);
 
 	if (rtc_channel)
 	{
@@ -254,6 +272,8 @@ rtc_close(void)
 		close(rtc_fd);
 		rtc_fd = -1;
 	}
+
+	wakeup_alarm_close();
 }
 
 /**
@@ -362,6 +382,15 @@ rtc_set_alarm_time(time_t expiry)
 		g_debug("%s: expiry = now + 2", __FUNCTION__);
 		expiry = now + 2;
 	}
+
+	/*
+	 * Make sure we really wake up when in deep sleep. An RTC alarm alone is at
+	 * the mercy of what the platform does with the RTC across suspend; a
+	 * CLOCK_REALTIME_ALARM timer is the interface the kernel's alarmtimer
+	 * framework guarantees for it. Arm both and let whichever fires first do
+	 * the waking.
+	 */
+	wakeup_alarm_set(expiry);
 
 	gmtime_r(&expiry, &tm_time);
 	tm_to_rtc_wkalrm(&tm_time, &alarm);
@@ -507,6 +536,8 @@ rtc_clear_alarm(void)
 		}
 	}
 
+	wakeup_alarm_clear();
+
 	return true;
 error:
 	return false;
@@ -525,17 +556,18 @@ rtc_check_alarm(void)
 {
 #if DEV_RTC_IMPLEMENTED
 	unsigned long data;
-	int32_t ret;
+	ssize_t ret;
 
-	ret = read(rtc_fd, &data, sizeof(unsigned long));
+	ret = read(rtc_fd, &data, sizeof(data));
 
-	if (ret <= 0)
+	if (ret < (ssize_t) sizeof(data))
 	{
 		/*
 		 * Nothing was consumed, so the descriptor stays ready. rtc_event()
 		 * gives the watch up once this has happened often enough in a row,
-		 * rather than being re-dispatched on it for ever. A short read counts
-		 * too: it leaves the same descriptor readable.
+		 * rather than being re-dispatched on it for ever. A short read is
+		 * counted the same way: acting on a partly-filled data word would be
+		 * reading the alarm flag out of uninitialised bytes.
 		 */
 		rtc_read_errors++;
 		return false;

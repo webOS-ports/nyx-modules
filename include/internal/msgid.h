@@ -72,6 +72,7 @@
 #define MSGID_NYX_MOD_SYSTEM_OUT_OF_MEMORY                                  "NYXSYS_OUT_OF_MEM"
 #define MSGID_NYX_MOD_SYSTEM_OPEN_ERR                                       "NYXSYS_OPEN_ERR"
 #define MSGID_NYX_MOD_SYSTEM_SUSPEND                                        "NYXSYS_SUSPEND"
+#define MSGID_NYX_MOD_SYSTEM_ALARM_TIME_ERR                                 "NYXSYS_ALARM_TIME_ERR"
 
 /** Mass Storage Mode - MTP */
 #define MSGID_NYX_MOD_MSMMTP_OPEN_ERR                                       "NYXMSM_OPEN_ERR"
