@@ -226,6 +226,110 @@ static void test_read_round_trips_through_timegm_in_any_zone(void)
 	g_free(saved);
 }
 
+/* ---- delivery: the watch added so an expiry reaches its caller ---- */
+
+static int fired;
+static GMainLoop *pump_loop;
+static gboolean pump_timed_out;
+
+static void on_fired(void)
+{
+	fired++;
+
+	/* End the wait as soon as it is delivered, so a passing test is quick and a
+	 * failing one is the only slow case. */
+	if (pump_loop)
+		g_main_loop_quit(pump_loop);
+}
+
+static gboolean give_up(gpointer data)
+{
+	pump_timed_out = TRUE;
+	g_main_loop_quit((GMainLoop *) data);
+	return G_SOURCE_REMOVE;
+}
+
+/* Run the default context until the callback lands or the window closes. */
+static void pump(int seconds)
+{
+	guint id;
+
+	pump_loop = g_main_loop_new(NULL, FALSE);
+	pump_timed_out = FALSE;
+	id = g_timeout_add_seconds(seconds, give_up, pump_loop);
+
+	g_main_loop_run(pump_loop);
+
+	/* give_up returns G_SOURCE_REMOVE, so it is gone already if it ran. */
+	if (!pump_timed_out)
+		g_source_remove(id);
+
+	g_main_loop_unref(pump_loop);
+	pump_loop = NULL;
+}
+
+static void test_expiry_delivers_the_callback(void)
+{
+	wakeup_alarm_close();
+	fired = 0;
+	open_alarm();
+	wakeup_alarm_set_callback(on_fired);
+
+	/*
+	 * Floored to now + 2 by wakeup_alarm_set(). Before the watch existed this
+	 * timer was armed and never read, so nothing could report the expiry and a
+	 * device whose RTC cannot be set never saw its alarm fire at all.
+	 */
+	g_assert_true(wakeup_alarm_set(time(NULL) + 1));
+
+	pump(8);
+
+	g_assert_cmpint(fired, ==, 1);
+	/* Reported once, and the record cleared so a repeat arming is not a no-op. */
+	g_assert_cmpint(curr_expiry, ==, 0);
+
+	wakeup_alarm_set_callback(NULL);
+	wakeup_alarm_close();
+}
+
+static void test_cleared_alarm_delivers_nothing(void)
+{
+	wakeup_alarm_close();
+	fired = 0;
+	open_alarm();
+	wakeup_alarm_set_callback(on_fired);
+
+	g_assert_true(wakeup_alarm_set(time(NULL) + 1));
+	g_assert_true(wakeup_alarm_clear());
+
+	pump(5);
+
+	g_assert_cmpint(fired, ==, 0);
+
+	wakeup_alarm_set_callback(NULL);
+	wakeup_alarm_close();
+}
+
+static void test_watch_survives_a_second_expiry(void)
+{
+	wakeup_alarm_close();
+	fired = 0;
+	open_alarm();
+	wakeup_alarm_set_callback(on_fired);
+
+	g_assert_true(wakeup_alarm_set(time(NULL) + 1));
+	pump(8);
+	g_assert_cmpint(fired, ==, 1);
+
+	/* The watch stays subscribed, so the next alarm is delivered too. */
+	g_assert_true(wakeup_alarm_set(time(NULL) + 1));
+	pump(8);
+	g_assert_cmpint(fired, ==, 2);
+
+	wakeup_alarm_set_callback(NULL);
+	wakeup_alarm_close();
+}
+
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
@@ -242,5 +346,11 @@ int main(int argc, char **argv)
 	g_test_add_func("/system/alarm/clear-disarms", test_clear_disarms);
 	g_test_add_func("/system/alarm/read-round-trips-in-any-zone",
 	                test_read_round_trips_through_timegm_in_any_zone);
+	g_test_add_func("/system/alarm/expiry-delivers-the-callback",
+	                test_expiry_delivers_the_callback);
+	g_test_add_func("/system/alarm/cleared-alarm-delivers-nothing",
+	                test_cleared_alarm_delivers_nothing);
+	g_test_add_func("/system/alarm/watch-survives-a-second-expiry",
+	                test_watch_survives_a_second_expiry);
 	return g_test_run();
 }

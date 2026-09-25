@@ -33,6 +33,17 @@
 #include <stdbool.h>
 #include <time.h>
 
+/* Same shape as RtcAlarmFunc in rtc.h, declared here so the two files do not
+ * have to include each other. */
+typedef void (*WakeupAlarmFunc)(void);
+
+/*
+ * Deliver expiries to func, or to nobody when it is NULL. rtc.c registers the
+ * same callback it gives rtc_add_watch(), so an alarm reaches its consumer from
+ * whichever of the two timers gets there first.
+ */
+void wakeup_alarm_set_callback(WakeupAlarmFunc func);
+
 bool wakeup_alarm_open(void);
 void wakeup_alarm_close(void);
 bool wakeup_alarm_set(time_t expiry);

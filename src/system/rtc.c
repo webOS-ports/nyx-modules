@@ -220,6 +220,13 @@ rtc_add_watch(RtcAlarmFunc func)
 {
 #if DEV_RTC_IMPLEMENTED
 
+	/*
+	 * The wakeup timer reports expiries to the same callback. On a device whose
+	 * RTC cannot be set - a Pixel 3a, say - it is the only one of the two that
+	 * can fire at the right time.
+	 */
+	wakeup_alarm_set_callback((WakeupAlarmFunc) func);
+
 	if (rtc_channel == NULL)
 	{
 		rtc_channel = g_io_channel_unix_new(rtc_fd);
@@ -238,6 +245,8 @@ bool
 rtc_clear_watch(void)
 {
 #if DEV_RTC_IMPLEMENTED
+
+	wakeup_alarm_set_callback(NULL);
 
 	if (rtc_channel)
 	{

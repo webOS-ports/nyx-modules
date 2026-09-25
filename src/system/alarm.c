@@ -36,16 +36,31 @@
 * platform. The functions kept their shape but lost the android_ prefix, which
 * only ever described the driver they used to talk to.
 *
-* Note the scope: nothing reads or polls this descriptor. Arming the timer is
-* the whole point - an expiring CLOCK_REALTIME_ALARM brings the system out of
-* suspend, which is exactly what the old ANDROID_ALARM_SET(RTC_WAKEUP) ioctl
-* was for. rtc.c arms the RTC itself and calls in here in addition, to "make
-* sure we really wake up when in deep sleep".
+* Two things come out of that timer. Waking the system is the one it was added
+* for: an expiring CLOCK_REALTIME_ALARM brings the device out of suspend, which
+* is what the old ANDROID_ALARM_SET(RTC_WAKEUP) ioctl did, and rtc.c arms the
+* RTC alongside it to "make sure we really wake up when in deep sleep".
+*
+* The second is the expiry itself. This descriptor used to be armed and never
+* read, so the only thing that could tell a caller its alarm had fired was the
+* RTC's own interrupt - and on a device whose RTC cannot be set, that never
+* happens. A Pixel 3a is exactly that device: pm660.dtsi carries
+* qcom,qpnp-rtc-write = <0>, so the driver registers read-only ops, RTC_SET_TIME
+* returns EINVAL even for root, and the RTC sits at 1970 while the system clock
+* is correct. qpnp_rtc_set_alarm() then compares the requested alarm against the
+* RTC's own clock, finds 2026 comfortably in its future, and arms it for about
+* fifty-six years' time.
+*
+* So the timer is watched as well as armed. CLOCK_REALTIME is right on such a
+* device even when the RTC is not, which makes this the only path that can fire
+* at the intended moment, and the callback it delivers is the same one rtc.c
+* hands to rtc_add_watch().
 *************************************************************************
 */
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdint.h>
 #include <string.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
@@ -75,6 +90,17 @@
  */
 
 static int32_t alarm_fd = -1;
+static guint alarm_watch = 0;
+static WakeupAlarmFunc alarm_fired_func = NULL;
+
+/*
+ * Reads of the timer that produced nothing. A ready timerfd always has eight
+ * bytes to give, so this should never move; it is here because returning TRUE
+ * from a glib watch on a descriptor that cannot be drained is the spin this tree
+ * has already had to fix in the charger, battery, keys and RTC paths.
+ */
+static int empty_reads = 0;
+#define ALARM_MAX_EMPTY_READS 16
 
 /*
  * False when we had to fall back to a plain CLOCK_REALTIME timer, which still
@@ -91,6 +117,85 @@ static bool wakeup_alarm_available(void)
 	return alarm_fd >= 0;
 }
 
+void wakeup_alarm_set_callback(WakeupAlarmFunc func)
+{
+	alarm_fired_func = func;
+}
+
+/*
+ * The timer expired. Drain it - a timerfd stays readable until it is read - and
+ * hand the expiry on.
+ *
+ * Where the RTC works, rtc_clear_alarm() disarms this timer before delivering
+ * its own callback, so only one of the two is reported. The other order can
+ * still deliver twice, here and from the RTC interrupt a moment later; consumers
+ * re-read alarm state when called, so that is harmless.
+ */
+static gboolean _alarm_expired(GIOChannel *channel, GIOCondition condition,
+                               gpointer data)
+{
+	uint64_t ticks = 0;
+	ssize_t rd;
+
+	if (condition & (G_IO_HUP | G_IO_ERR | G_IO_NVAL))
+	{
+		g_warning("wakeup alarm timer lost (condition 0x%x), dropping the watch",
+		          condition);
+		alarm_watch = 0;
+		return G_SOURCE_REMOVE;
+	}
+
+	rd = read(alarm_fd, &ticks, sizeof(ticks));
+
+	if (rd < (ssize_t) sizeof(ticks))
+	{
+		if (++empty_reads < ALARM_MAX_EMPTY_READS)
+			return TRUE;
+
+		g_warning("wakeup alarm timer ready but unreadable %d times, dropping the watch",
+		          empty_reads);
+		empty_reads = 0;
+		alarm_watch = 0;
+		return G_SOURCE_REMOVE;
+	}
+
+	empty_reads = 0;
+	curr_expiry = 0;
+
+	nyx_debug("%s: alarm expired (%llu tick(s))", __FUNCTION__,
+	          (unsigned long long) ticks);
+
+	if (alarm_fired_func)
+		alarm_fired_func();
+
+	return TRUE;
+}
+
+/* Watch the timer, so an expiry is delivered and not merely slept through. */
+static void _wakeup_alarm_watch(void)
+{
+	GIOChannel *channel;
+
+	if (alarm_fd < 0 || alarm_watch != 0)
+		return;
+
+	channel = g_io_channel_unix_new(alarm_fd);
+
+	if (!channel)
+		return;
+
+	/*
+	 * The descriptor belongs to this file, not to the channel, so the channel
+	 * must not close it when the watch drops its reference.
+	 */
+	g_io_channel_set_close_on_unref(channel, FALSE);
+	alarm_watch = g_io_add_watch(channel,
+	                             G_IO_IN | G_IO_HUP | G_IO_ERR | G_IO_NVAL,
+	                             _alarm_expired, NULL);
+	g_io_channel_unref(channel);
+	empty_reads = 0;
+}
+
 /**
  * @brief Create the wakeup alarm timer.
  *
@@ -105,6 +210,7 @@ bool wakeup_alarm_open(void)
 	alarm_fd = timerfd_create(CLOCK_REALTIME_ALARM, TFD_CLOEXEC | TFD_NONBLOCK);
 	if (alarm_fd >= 0) {
 		alarm_wakes_from_suspend = true;
+		_wakeup_alarm_watch();
 		return true;
 	}
 
@@ -126,6 +232,10 @@ bool wakeup_alarm_open(void)
 	g_warning("CLOCK_REALTIME_ALARM unavailable (%d) - alarms will not wake the device from suspend",
 	          alarm_errno);
 
+	/* It cannot wake the device, but it does still expire, so it is still worth
+	 * watching: the caller gets its callback at the right moment. */
+	_wakeup_alarm_watch();
+
 	return true;
 }
 
@@ -134,6 +244,12 @@ bool wakeup_alarm_open(void)
 */
 void wakeup_alarm_close(void)
 {
+	if (alarm_watch != 0)
+	{
+		g_source_remove(alarm_watch);
+		alarm_watch = 0;
+	}
+
 	if (alarm_fd >= 0)
 	{
 		close(alarm_fd);
@@ -142,6 +258,7 @@ void wakeup_alarm_close(void)
 
 	alarm_wakes_from_suspend = false;
 	curr_expiry = 0;
+	empty_reads = 0;
 }
 
 /**
