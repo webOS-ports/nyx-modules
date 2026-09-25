@@ -111,6 +111,15 @@ struct udev *udev = NULL;
 struct udev_monitor *mon = NULL;
 guint watch = 0;
 
+/*
+ * Consecutive uevent wakeups that produced no device. See _handle_event(): a
+ * handful is normal (a message that failed the filter), a run of them means the
+ * socket is wedged and has to be rebuilt. The charger module carries the same
+ * guard for the same reason.
+ */
+static int empty_reads = 0;
+#define BATTERY_MAX_EMPTY_READS 16
+
 extern nyx_device_t *nyxDev;
 extern void *battery_callback_context;
 extern nyx_device_callback_function_t battery_callback;
@@ -877,10 +886,128 @@ static void detect_battery_sysfs_paths(void)
 	}
 }
 
+static gboolean _battery_monitor_start(void);
+gboolean _handle_event(GIOChannel *channel, GIOCondition condition, gpointer data);
+
+/*
+ * Drop the watch and the monitor, keeping the udev context. battery_cleanup()
+ * tears down everything including udev and the battery list, which is far more
+ * than a wedged socket calls for.
+ */
+static void _battery_monitor_stop(void)
+{
+	if (0 != watch)
+	{
+		g_source_remove(watch);
+		watch = 0;
+	}
+
+	if (NULL != mon)
+	{
+		udev_monitor_unref(mon);
+		mon = NULL;
+	}
+}
+
+/*
+ * Build the power_supply uevent monitor and put a watch on it. Called from
+ * battery_init() and again from _handle_event() when the descriptor it is
+ * watching turns out to be dead.
+ */
+static gboolean _battery_monitor_start(void)
+{
+	GIOChannel *channel;
+	int fd;
+
+	_battery_monitor_stop();
+
+	mon = udev_monitor_new_from_netlink(udev, "kernel");
+
+	if (mon == NULL)
+	{
+		nyx_error(MSGID_NYX_MOD_UDEV_MONITOR_ERR, 0,
+		          "Failed to create udev monitor for kernel events");
+		return FALSE;
+	}
+
+	if (udev_monitor_filter_add_match_subsystem_devtype(mon, "power_supply",
+	        NULL) < 0)
+	{
+		nyx_error(MSGID_NYX_MOD_UDEV_SUBSYSTEM_ERR, 0,
+		          "Failed to setup udev filter for power_supply subsytem events");
+		_battery_monitor_stop();
+		return FALSE;
+	}
+
+	if (udev_monitor_enable_receiving(mon) < 0)
+	{
+		nyx_error(MSGID_NYX_MOD_UDEV_RECV_ERR, 0,
+		          "Failed to enable receiving kernel events for power_supply subsytem");
+		_battery_monitor_stop();
+		return FALSE;
+	}
+
+	fd = udev_monitor_get_fd(mon);
+
+	if (-1 == fd)
+	{
+		_battery_monitor_stop();
+		return FALSE;
+	}
+
+	channel = g_io_channel_unix_new(fd);
+
+	if (!channel)
+	{
+		_battery_monitor_stop();
+		return FALSE;
+	}
+
+	/* add the watch (which takes a ref) before dropping ours */
+	watch = g_io_add_watch(channel, G_IO_IN | G_IO_HUP | G_IO_ERR | G_IO_NVAL,
+	                       _handle_event, NULL);
+
+	/*
+	 * Deliberately not g_io_channel_set_close_on_unref(): the fd belongs to
+	 * the udev monitor, which closes it in udev_monitor_unref(). Letting the
+	 * channel close it too would close a descriptor number that libudev still
+	 * believes it holds, and that the kernel may already have handed to
+	 * something else.
+	 */
+	g_io_channel_unref(channel);
+
+	if (0 == watch)
+	{
+		_battery_monitor_stop();
+		return FALSE;
+	}
+
+	empty_reads = 0;
+	return TRUE;
+}
+
 gboolean _handle_event(GIOChannel *channel, GIOCondition condition,
                        gpointer data)
 {
 	struct udev_device *dev;
+
+	if (condition & (G_IO_HUP | G_IO_ERR | G_IO_NVAL))
+	{
+		/*
+		 * The netlink socket is gone. glib reports these conditions whether or
+		 * not they were asked for, and returning TRUE here - as this used to,
+		 * unconditionally, for every condition - has glib re-dispatch us
+		 * immediately on a dead descriptor, for ever: a tight loop that burns a
+		 * whole core and starves every other source in the process, batteryd's
+		 * luna methods included. Rebuild the monitor instead.
+		 */
+		nyx_error(MSGID_NYX_MOD_UDEV_MONITOR_ERR, 0,
+		          "power_supply uevent socket lost (condition 0x%x), reopening",
+		          condition);
+		watch = 0;
+		_battery_monitor_start();
+		return G_SOURCE_REMOVE;
+	}
 
 	if ((condition  & G_IO_IN) == G_IO_IN)
 	{
@@ -891,6 +1018,8 @@ gboolean _handle_event(GIOChannel *channel, GIOCondition condition,
 			/*Initiate callback only if battery percentage or present parameters change*/
 			bool changed = false;
 			int i;
+
+			empty_reads = 0;
 
 			/*
 			 * A battery appearing or disappearing is a power_supply add or
@@ -931,10 +1060,41 @@ gboolean _handle_event(GIOChannel *channel, GIOCondition condition,
 		}
 		else
 		{
-			if (battery_callback != NULL)
+			/*
+			 * Readable, but nothing came back. udev_monitor_receive_device()
+			 * returns NULL for a message that failed its filter, for a recv
+			 * error, and for a socket that has gone bad - and in that last case
+			 * the descriptor stays readable for ever.
+			 *
+			 * This used to fire the battery callback here and return TRUE, so a
+			 * wedged socket did not merely spin: every pass told batteryd the
+			 * battery had changed, which had it re-read sysfs and re-broadcast
+			 * as fast as the loop could turn. Tolerate a few filtered messages,
+			 * which are normal and transient, then rebuild the monitor the same
+			 * way the hangup path above does, and say so once rather than
+			 * thousands of times.
+			 */
+			if (++empty_reads < BATTERY_MAX_EMPTY_READS)
 			{
-				battery_callback(nyxDev, NYX_CALLBACK_STATUS_DONE, battery_callback_context);
+				return TRUE;
 			}
+
+			nyx_error(MSGID_NYX_MOD_UDEV_MONITOR_ERR, 0,
+			          "power_supply uevent socket readable but empty %d times, reopening",
+			          empty_reads);
+			watch = 0;
+
+			if (_battery_monitor_start() && battery_callback != NULL)
+			{
+				/*
+				 * A real change may have arrived while the socket was wedged,
+				 * so ask for one re-read now that there is a working monitor.
+				 */
+				battery_callback(nyxDev, NYX_CALLBACK_STATUS_DONE,
+				                 battery_callback_context);
+			}
+
+			return G_SOURCE_REMOVE;
 		}
 	}
 
@@ -977,9 +1137,6 @@ static void battery_cleanup(void)
 
 nyx_error_t battery_init(void)
 {
-	int fd;
-	GIOChannel *channel = NULL;
-
 	udev = udev_new();
 
 	if (!udev)
@@ -992,66 +1149,8 @@ nyx_error_t battery_init(void)
 	/*Initialize the sysfs paths, and with them the current present/percentage values*/
 	detect_battery_sysfs_paths();
 
-	mon = udev_monitor_new_from_netlink(udev, "kernel");
-
-	if (mon == NULL)
-	{
-		nyx_error(MSGID_NYX_MOD_UDEV_MONITOR_ERR, 0,
-		          "Failed to create udev monitor for kernel events");
-		battery_cleanup();
-		return NYX_ERROR_GENERIC;
-	}
-
-	if (udev_monitor_filter_add_match_subsystem_devtype(mon, "power_supply",
-	        NULL) < 0)
-	{
-		nyx_error(MSGID_NYX_MOD_UDEV_SUBSYSTEM_ERR, 0,
-		          "Failed to setup udev filter for power_supply subsytem events");
-		battery_cleanup();
-		return NYX_ERROR_GENERIC;
-	}
-
-	if (udev_monitor_enable_receiving(mon) < 0)
-	{
-		nyx_error(MSGID_NYX_MOD_UDEV_RECV_ERR, 0,
-		          "Failed to enable receiving kernel events for power_supply subsytem\n");
-		battery_cleanup();
-		return NYX_ERROR_GENERIC;
-	}
-
-	/* Setup io watch for uevents */
-	fd = udev_monitor_get_fd(mon);
-
-	if (-1 == fd)
-	{
-		battery_cleanup();
-		return NYX_ERROR_GENERIC;
-	}
-
-	channel = g_io_channel_unix_new(fd);
-
-	if (!channel)
-	{
-		battery_cleanup();
-		return NYX_ERROR_GENERIC;
-	}
-
-	/* add watch event (which adds a ref) before calling g_io_channel_unref */
-	watch = g_io_add_watch(channel, G_IO_IN | G_IO_HUP | G_IO_NVAL, _handle_event,
-	                       NULL);
-
-	/* Remove the ref from g_io_channel_unix_new so we won't leak the channel if g_io_add_watch failed */
-	/* watch holds another ref which is removed in battery_cleanup */
-	/*
-	 * Deliberately not g_io_channel_set_close_on_unref(): the fd belongs to
-	 * the udev monitor, which closes it in battery_cleanup(). Letting the
-	 * channel close it too would close a descriptor number that libudev still
-	 * believes it holds, and that the kernel may already have handed to
-	 * something else.
-	 */
-	g_io_channel_unref(channel);
-
-	if (0 == watch)
+	/* Same code path as the rebuild in _handle_event(), so both stay correct. */
+	if (!_battery_monitor_start())
 	{
 		battery_cleanup();
 		return NYX_ERROR_GENERIC;
