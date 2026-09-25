@@ -552,6 +552,17 @@ int read_input_event(InputEvent_t* pEvents, int maxEvents)
                     numEvents += rd / sizeof(InputEvent_t);
                     break;
                 }
+                else if (rd == 0)
+                {
+                    /*
+                     * EOF on an input node. A zero return matched neither of the
+                     * other two arms, so this read a dead descriptor in a tight
+                     * loop for ever. reap_dead_event_fds() below retires the
+                     * node; just stop reading it.
+                     */
+                    nyx_error(MSGID_NYX_MOD_KEY_EVENT_READ_ERR, 0, "Keypad event file returned EOF");
+                    break;
+                }
                 else if (rd < 0 && errno != EINTR) 
                 {
     				nyx_error(MSGID_NYX_MOD_KEY_EVENT_READ_ERR, 0, "Failed to read events from keypad event file");

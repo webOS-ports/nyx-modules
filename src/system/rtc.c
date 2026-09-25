@@ -145,6 +145,17 @@ rtc_open(void)
 
 #if DEV_RTC_IMPLEMENTED
 
+static GIOChannel *rtc_channel = NULL;
+
+/*
+ * Consecutive failed reads of the RTC descriptor. A read that fails does not
+ * drain it, so it stays ready and glib re-dispatches immediately: the same
+ * spin the charger, battery and keys modules each had to be taught to avoid.
+ * rtc_check_alarm() maintains this.
+ */
+static int rtc_read_errors = 0;
+#define RTC_MAX_READ_ERRORS 16
+
 /**
 * @brief The callback function called when the rtc driver notifies an alarm expiry.
 */
@@ -154,9 +165,36 @@ rtc_event(GIOChannel *source, GIOCondition condition, gpointer ctx)
 {
 	RtcAlarmFunc func = (RtcAlarmFunc)ctx;
 
+	if (condition & (G_IO_HUP | G_IO_ERR | G_IO_NVAL))
+	{
+		/*
+		 * glib reports these whether or not they were asked for, and this
+		 * watch only asked for G_IO_IN. Returning TRUE on a descriptor the
+		 * kernel has hung up means being called again immediately, for ever.
+		 */
+		g_warning("rtc descriptor lost (condition 0x%x), dropping the alarm watch",
+		          condition);
+		rtc_channel = NULL;
+		return G_SOURCE_REMOVE;
+	}
+
 	if (rtc_check_alarm())
 	{
 		func();
+	}
+
+	if (rtc_read_errors >= RTC_MAX_READ_ERRORS)
+	{
+		/*
+		 * Ready to read and failing to read, over and over: the descriptor is
+		 * never drained, so staying subscribed is a busy loop. Give it up and
+		 * say so once; rtc_add_watch() can attach a fresh channel later.
+		 */
+		g_warning("rtc read failed %d times in a row, dropping the alarm watch",
+		          rtc_read_errors);
+		rtc_read_errors = 0;
+		rtc_channel = NULL;
+		return G_SOURCE_REMOVE;
 	}
 
 	return TRUE;
@@ -168,8 +206,6 @@ rtc_event(GIOChannel *source, GIOCondition condition, gpointer ctx)
 *
 */
 
-static GIOChannel *rtc_channel = NULL;
-
 bool
 rtc_add_watch(RtcAlarmFunc func)
 {
@@ -178,7 +214,8 @@ rtc_add_watch(RtcAlarmFunc func)
 	if (rtc_channel == NULL)
 	{
 		rtc_channel = g_io_channel_unix_new(rtc_fd);
-		g_io_add_watch(rtc_channel, G_IO_IN, rtc_event, func);
+		g_io_add_watch(rtc_channel, G_IO_IN | G_IO_HUP | G_IO_ERR | G_IO_NVAL,
+		               rtc_event, func);
 		g_io_channel_unref(rtc_channel);
 	}
 
@@ -492,11 +529,21 @@ rtc_check_alarm(void)
 
 	ret = read(rtc_fd, &data, sizeof(unsigned long));
 
-	if (ret < 0)
+	if (ret <= 0)
 	{
+		/*
+		 * Nothing was consumed, so the descriptor stays ready. rtc_event()
+		 * gives the watch up once this has happened often enough in a row,
+		 * rather than being re-dispatched on it for ever. A short read counts
+		 * too: it leaves the same descriptor readable.
+		 */
+		rtc_read_errors++;
 		return false;
 	}
-	else if (data & RTC_AF)
+
+	rtc_read_errors = 0;
+
+	if (data & RTC_AF)
 	{
 		rtc_clear_alarm();
 		return true;

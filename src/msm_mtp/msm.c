@@ -300,18 +300,119 @@ nyx_error_t mtp_register_change_callback(nyx_device_handle_t handle,
 	return NYX_ERROR_NONE;
 }
 
+/*
+ * Consecutive wakeups that produced no device. A handful is normal (a message
+ * that failed the filter); a run of them means the socket is wedged. Same guard
+ * as the charger and battery modules.
+ */
+static int empty_reads = 0;
+#define MTP_MAX_EMPTY_READS 16
+
+static gboolean _mtp_monitor_start(void);
+gboolean _handle_event(GIOChannel *channel, GIOCondition condition, gpointer data);
+
+/* Drop the watch and the monitor, keeping the udev context. */
+static void _mtp_monitor_stop(void)
+{
+	if (0 != event_watch) {
+		g_source_remove(event_watch);
+		event_watch = 0;
+	}
+
+	if (NULL != mon) {
+		udev_monitor_unref(mon);
+		mon = NULL;
+	}
+
+	channel = NULL;
+}
+
+/*
+ * Build the gadget-state monitor and watch it. Called from mtp_init() and again
+ * from _handle_event() when the descriptor turns out to be dead.
+ */
+static gboolean _mtp_monitor_start(void)
+{
+	int fd;
+
+	_mtp_monitor_stop();
+
+	mon = udev_monitor_new_from_netlink(udev, "udev");
+	if (!mon) {
+		nyx_error(MSGID_NYX_MOD_UDEV_ERR, 0, "Could not create udev monitor; mtp status updates will not be available");
+		return FALSE;
+	}
+
+	/* legacy Android gadget on old kernels, UDC state changes on
+	 * configfs/libcomposite kernels */
+	udev_monitor_filter_add_match_subsystem_devtype(mon, "android_usb", NULL);
+	udev_monitor_filter_add_match_subsystem_devtype(mon, "udc", NULL);
+	udev_monitor_enable_receiving(mon);
+	fd = udev_monitor_get_fd(mon);
+
+	if (-1 == fd) {
+		_mtp_monitor_stop();
+		return FALSE;
+	}
+
+	channel = g_io_channel_unix_new(fd);
+	if (!channel) {
+		_mtp_monitor_stop();
+		return FALSE;
+	}
+
+	event_watch = g_io_add_watch(channel, G_IO_IN | G_IO_HUP | G_IO_ERR | G_IO_NVAL, _handle_event, NULL);
+
+	if (0 == event_watch) {
+		_mtp_monitor_stop();
+		return FALSE;
+	}
+
+	empty_reads = 0;
+	return TRUE;
+}
+
 gboolean _handle_event(GIOChannel *channel, GIOCondition condition, gpointer data)
 {
 	struct udev_device *dev;
 
+	if (condition & (G_IO_HUP | G_IO_ERR | G_IO_NVAL)) {
+		/*
+		 * The netlink socket is gone. glib reports these conditions whether or
+		 * not they were asked for, and returning TRUE - as this used to, for
+		 * every condition - has glib re-dispatch us immediately on a dead
+		 * descriptor for ever, burning a core and starving every other source
+		 * in the process. Rebuild the monitor instead.
+		 */
+		nyx_error(MSGID_NYX_MOD_UDEV_ERR, 0, "mtp uevent socket lost (condition 0x%x), reopening", condition);
+		event_watch = 0;
+		_mtp_monitor_start();
+		return G_SOURCE_REMOVE;
+	}
+
 	if ((condition  & G_IO_IN) == G_IO_IN) {
 		dev = udev_monitor_receive_device(mon);
 		if (dev) {
+			empty_reads = 0;
 			/* USB gadget state changed; notify connected clients so
 			 * they can query the new status */
 			if (mtp_change_callback)
 				mtp_change_callback(nyxDev, NYX_CALLBACK_STATUS_DONE, mtp_change_callback_context);
 			udev_device_unref(dev);
+		}
+		else {
+			/*
+			 * Readable with nothing to give. Transient for a filtered message,
+			 * permanent for a socket that has gone bad - and in that case
+			 * returning TRUE spins exactly as the hangup path above would.
+			 */
+			if (++empty_reads < MTP_MAX_EMPTY_READS)
+				return TRUE;
+
+			nyx_error(MSGID_NYX_MOD_UDEV_ERR, 0, "mtp uevent socket readable but empty %d times, reopening", empty_reads);
+			event_watch = 0;
+			_mtp_monitor_start();
+			return G_SOURCE_REMOVE;
 		}
 	}
 
@@ -320,24 +421,14 @@ gboolean _handle_event(GIOChannel *channel, GIOCondition condition, gpointer dat
 
 void mtp_init(void)
 {
-	int fd;
-
 	udev = udev_new();
 	if (!udev) {
 		nyx_error(MSGID_NYX_MOD_UDEV_ERR, 0, "Could not initialize udev component; mtp status updates will not be available");
 		return;
 	}
 
-	mon = udev_monitor_new_from_netlink(udev, "udev");
-	/* legacy Android gadget on old kernels, UDC state changes on
-	 * configfs/libcomposite kernels */
-	udev_monitor_filter_add_match_subsystem_devtype(mon, "android_usb", NULL);
-	udev_monitor_filter_add_match_subsystem_devtype(mon, "udc", NULL);
-	udev_monitor_enable_receiving(mon);
-	fd = udev_monitor_get_fd(mon);
-
-	channel = g_io_channel_unix_new(fd);
-	event_watch = g_io_add_watch(channel, G_IO_IN | G_IO_HUP | G_IO_NVAL, _handle_event, NULL);
+	/* Same code path as the rebuild in _handle_event(), so both stay correct. */
+	_mtp_monitor_start();
 }
 
 void mtp_close(void)
