@@ -1,4 +1,4 @@
-# Copyright (c) 2010-2018 LG Electronics, Inc.
+# Copyright (c) 2026 LuneOS
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,8 +14,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-webos_build_nyx_module(SystemMain
-                       SOURCES system.c rtc.c alarm.c
-                       LIBRARIES ${GLIB2_LDFLAGS} ${GIO_LDFLAGS} ${PMLOG_LDFLAGS} ${NYXLIB_LDFLAGS} -lrt -lpthread)
-
-add_subdirectory(tests)
+add_executable(nyx-test-system nyx_test_system.c)
+target_link_libraries(nyx-test-system ${NYXLIB_LDFLAGS} ${GLIB2_LDFLAGS} ${PMLOG_LDFLAGS})
+webos_build_program(NAME nyx-test-system)
