@@ -443,6 +443,16 @@ static int read_input_event(int fd, struct input_event *events, int max_events)
 				num_events += bytesread / sizeof(struct input_event);
 				break;
 			}
+			else if (bytesread == 0) {
+				/*
+				 * EOF on an input node. Neither of the other two arms matches a
+				 * zero return, so this used to read a dead descriptor in a tight
+				 * loop for ever - the caller polls it as ready, we consume
+				 * nothing, and nothing in the loop can change that.
+				 */
+				nyx_error(MSGID_NYX_MOD_ALS_READ_EVENT_ERR, 0, "Event file returned EOF");
+				return -1;
+			}
 			else if (bytesread < 0 && errno != EINTR) {
 				nyx_error(MSGID_NYX_MOD_ALS_READ_EVENT_ERR, 0, "Failed to read events from event file");
 				return -1;
