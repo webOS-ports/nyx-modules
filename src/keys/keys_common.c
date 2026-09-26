@@ -542,10 +542,28 @@ int read_input_event(InputEvent_t* pEvents, int maxEvents)
     {
         if (fds[n].revents & POLLIN) 
         {
+            /* Read in after whatever the earlier descriptors already delivered.
+             * Every node used to be read into pEvents[0] while numEvents counted
+             * them all, so a second node with input pending at the same moment
+             * overwrote the first one's events and left the tail of the buffer
+             * stale. The power key is typically the first node (qpnp_pon on
+             * athena) and on resume its press routinely arrives together with
+             * events from another node, so the press was the one overwritten:
+             * the power button "often does nothing", and a later volume press
+             * appears to wake the device because the latched events finally come
+             * through on the next read. */
+            if (numEvents >= maxEvents)
+            {
+                /* Buffer full. The remaining descriptors stay readable, so the
+                 * next poll picks them up immediately. */
+                break;
+            }
+
             /* keep looping if get EINTR */
             for (;;) 
             {
-                rd = read(fds[n].fd, pEvents, sizeof(InputEvent_t) * maxEvents);
+                rd = read(fds[n].fd, pEvents + numEvents,
+                          sizeof(InputEvent_t) * (maxEvents - numEvents));
 
                 if (rd > 0) 
                 {
