@@ -87,14 +87,15 @@ if(NYXMOD_OW_CEC)
 endif()
 
 # Modules added for LuneOS
-if(NYXMOD_OW_TOUCHPANEL_MTDEV)
+#
+# One touchpanel module for every machine. NYXMOD_OW_TOUCHPANEL_MTDEV used to
+# select a second copy of it built against mtdev; the copies are merged and the
+# panel is probed at runtime, so the flag is gone from here and from
+# nyx-modules-machines.inc.
+if(NYXMOD_OW_TOUCHPANEL)
     pkg_check_modules(MTDEV REQUIRED mtdev)
     include_directories(${MTDEV_INCLUDE_DIRS})
     webos_add_compiler_flags(ALL ${MTDEV_CFLAGS_OTHER})
-    add_subdirectory(touchpanel_mtdev)
-endif()
-
-if(NYXMOD_OW_TOUCHPANEL)
     add_subdirectory(touchpanel)
 endif()
 

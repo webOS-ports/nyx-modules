@@ -1,4 +1,6 @@
 // Copyright (c) 2010-2018 LG Electronics, Inc.
+// Copyright (c) 2012 Simon Busch <morphis@gravedo.de>
+// Copyright (c) 2018 Christophe Chapuis <chris.chapuis@gmail.com>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.

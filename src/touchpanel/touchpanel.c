@@ -1,4 +1,6 @@
 // Copyright (c) 2010-2018 LG Electronics, Inc.
+// Copyright (c) 2012 Simon Busch <morphis@gravedo.de>
+// Copyright (c) 2018 Christophe Chapuis <chris.chapuis@gmail.com>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,11 +29,14 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include <glib.h>
 #include <errno.h>
 #include <poll.h>
 #include <unistd.h>
+
+#include <mtdev.h>
 
 #include <nyx/nyx_module.h>
 #include <nyx/module/nyx_event_touchpanel_internal.h>
@@ -47,6 +52,7 @@
 
 #include "touchpanel_gestures.h"
 #include "msgid.h"
+#include "nyx_conf.h"
 
 /* Later versions of nyx_utils.h no longer define this macro */
 #undef return_if
@@ -74,6 +80,27 @@ typedef struct
 	size_t input_read;
 	input_event_t input[MAX_HIDD_EVENTS];
 } event_list_t;
+
+typedef struct
+{
+	int touchMajor;
+	int touchMinor;
+	int widthMajor;
+	int widthMinor;
+	int orientation;
+	int posX;
+	int posY;
+	int tracking_id;
+	int previous_tracking_id;
+	finger_t *nyx_finger;
+} mt_slot_t;
+struct mtdev *ts_mtdev = NULL;
+/*
+ * Maximum number of slots that this driver can handle for multitouch.
+ * Since we have 10 fingers, it seems sensible to have a max of 10 slots.
+ */
+#define MAX_MT_SLOTS    10
+mt_slot_t *mt_slots = NULL;
 
 
 event_list_t touchpanel_event_list;
@@ -374,6 +401,46 @@ get_display_res(int *x, int *y)
 }
 
 
+#define TP_BITS_PER_LONG   (sizeof(unsigned long) * 8)
+#define TP_NLONGS(x)       (((x) + TP_BITS_PER_LONG - 1) / TP_BITS_PER_LONG)
+#define TP_TEST_BIT(bit, array) \
+	(((array)[(bit) / TP_BITS_PER_LONG] >> ((bit) % TP_BITS_PER_LONG)) & 1)
+
+/*
+ * Whether this panel reports multitouch, which decides how its events are read
+ * below.
+ *
+ * This used to be a build-time decision: two copies of this module, touchpanel
+ * and touchpanel_mtdev, picked per machine in nyx-modules-machines.inc. The
+ * mtdev copy could not simply replace the other, because mtdev_new_open()
+ * succeeds on any evdev node - including one that only has ABS_X/ABS_Y - so its
+ * own "no mtdev" fallback never triggered on a single-touch panel. It took the
+ * slot path instead, where handle_new_mt_event() looks at nothing but ABS_MT_*,
+ * and dropped every event the panel sent.
+ *
+ * So ask the device what the two flags used to assert. A panel that has
+ * ABS_MT_POSITION_X is read through mtdev, which also normalises protocol A
+ * into slots; anything else goes through the single-touch path.
+ */
+static bool
+touchpanel_has_multitouch(int fd)
+{
+	unsigned long absbits[TP_NLONGS(ABS_CNT)];
+
+	memset(absbits, 0, sizeof(absbits));
+
+	if (ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(absbits)), absbits) < 0)
+	{
+		nyx_warn(MSGID_NYX_MOD_TP_MT_PROBE_ERR, 0,
+		         "Cannot read the ABS capabilities of the touchpanel (%s), "
+		         "assuming single touch", strerror(errno));
+		return false;
+	}
+
+	return TP_TEST_BIT(ABS_MT_POSITION_X, absbits);
+}
+
+
 static float scaleX = 1.0f, scaleY = 1.0f;
 
 static int
@@ -382,11 +449,26 @@ init_touchpanel(void)
 	struct input_absinfo abs;
 	int  maxX = 0, maxY = 0, sXres = 0, sYres = 0, ret = -1;
 
+	/*
+	 * luneos-device-config derives the touchscreen node - exactly one input
+	 * device advertises ID_INPUT_TOUCHSCREEN, so it needs no per-device
+	 * knowledge - and writes it here. Fall back to the compile-time define
+	 * for the machines still built that way, then to the udev symlink.
+	 */
+	gchar *tp_conf = nyx_conf_get_path("module.touchpanel", "path");
+	const char *tp_path = tp_conf;
+
+	if (!tp_path)
+	{
 #ifdef TOUCHPANEL_DEVICE
-	touchpanel_event_fd = open(TOUCHPANEL_DEVICE, O_RDWR | O_NONBLOCK);
+		tp_path = TOUCHPANEL_DEVICE;
 #else
-	touchpanel_event_fd = open("/dev/input/touchscreen0", O_RDWR | O_NONBLOCK);
+		tp_path = "/dev/input/touchscreen0";
 #endif
+	}
+
+	touchpanel_event_fd = open(tp_path, O_RDWR | O_NONBLOCK);
+	g_free(tp_conf);
 
 	if (touchpanel_event_fd < 0)
 	{
@@ -442,6 +524,46 @@ init_touchpanel(void)
 		         "No display resolution available, reporting touch coordinates unscaled");
 		scaleX = 1.0f;
 		scaleY = 1.0f;
+	}
+
+	/* initialize the mtdev instance for this touchscreen */
+	if (touchpanel_has_multitouch(touchpanel_event_fd))
+	{
+		ts_mtdev = mtdev_new_open(touchpanel_event_fd);
+
+		if (!ts_mtdev)
+		{
+			nyx_warn(MSGID_NYX_MOD_TP_MTDEV_OPEN_ERR, 0,
+			         "Panel reports multitouch but mtdev would not open it, "
+			         "falling back to single touch");
+		}
+	}
+	else
+	{
+		nyx_info(MSGID_NYX_MOD_TP_SINGLE_TOUCH, 0,
+		         "Touchpanel reports no multitouch axes, reading it as single touch");
+	}
+
+	if (ts_mtdev)
+	{
+		int iSlot = 0;
+
+		nyx_debug("[touchpanel] mtdev initialized.");
+		mt_slots = (mt_slot_t *)calloc(MAX_MT_SLOTS, sizeof(mt_slot_t));
+
+		if (mt_slots == NULL)
+		{
+			mtdev_close_delete(ts_mtdev);
+			ts_mtdev = NULL;
+			goto error;
+		}
+
+		for (; iSlot < MAX_MT_SLOTS; iSlot++)
+		{
+			mt_slots[iSlot].tracking_id = -1;
+			mt_slots[iSlot].previous_tracking_id = -1;
+			mt_slots[iSlot].nyx_finger = NULL;
+		}
 	}
 
 	return 0;
@@ -524,6 +646,15 @@ nyx_error_t nyx_module_close(nyx_device_t *d)
 	deinit_gesture_state_machine();
 	free(d);
 
+	if(ts_mtdev)
+	{
+		mtdev_close_delete(ts_mtdev);
+	}
+	if(mt_slots)
+	{
+		free(mt_slots);
+	}
+
 	if (touchpanel_event_fd >= 0)
 	{
 		close(touchpanel_event_fd);
@@ -588,8 +719,10 @@ generate_mouse_gesture(int touchButtonState)
 	yOrd[1] = 0;
 	wOrd[1] = 0;
 
+	/* track this new coordinate */
 	gesture_state_machine(xOrd, yOrd, wOrd, fingers, &eventTime,
 	                      touchpanel_event_list.input, &num_events);
+	/* process the modifications */
 	touchpanel_event_list.input_filled = num_events * sizeof(input_event_t);
 	touchpanel_event_list.input_read = 0;
 }
@@ -601,6 +734,72 @@ generate_mouse_gesture(int touchButtonState)
  */
 #define SYN_START       8
 
+static void handle_new_mt_event(input_event_t *event)
+{
+	static int currentSlot = 0;
+
+	/* safety check */
+	if ((NULL == ts_mtdev) || (NULL == mt_slots))
+		return;
+
+	nyx_debug("[touchpanel] ABS=%x KEY=%x,SYN=%x", EV_ABS, EV_KEY, EV_SYN);
+	nyx_debug("[touchpanel] event->type = %x, event->code = %x, event->value=%d", event->type, event->code, (int) (event->value));
+
+	/* if the current slot has changed, it should be the first thing we get */
+	if ((event->type == EV_ABS) && (event->code == ABS_MT_SLOT))
+		currentSlot = (int) (event->value);
+
+	/* if the current slot is not valid, then skip the event */
+	if (currentSlot < 0 || currentSlot >= MAX_MT_SLOTS)
+		return;
+
+	if ((event->type == EV_ABS) && (event->code == ABS_MT_TRACKING_ID))
+		mt_slots[currentSlot].tracking_id = (int) (event->value);
+
+    else if ((event->type == EV_ABS) && (event->code == ABS_MT_POSITION_X))
+            mt_slots[currentSlot].posX =  (int) (event->value * scaleX);
+
+    else if ((event->type == EV_ABS) && (event->code == ABS_MT_POSITION_Y))
+            mt_slots[currentSlot].posY = (int) (event->value * scaleY);
+
+	else if (event->type == EV_SYN && event->code == SYN_REPORT)
+    {
+        int num_events=0;
+        time_stamp_t eventTime;
+        get_time_stamp(&eventTime);
+
+		/* Now process all the changes */
+		int iSlot = 0;
+        for( ; iSlot < MAX_MT_SLOTS; iSlot++ )
+        {
+            if((mt_slots[iSlot].tracking_id != -1) && (mt_slots[iSlot].previous_tracking_id == -1))
+			{
+				/* a new finger has appeared */
+				nyx_debug("[touchpanel] new finger");
+				mt_slots[iSlot].nyx_finger = add_new_finger(mt_slots[iSlot].posX, mt_slots[iSlot].posY, 1, &eventTime);
+				mt_slots[iSlot].previous_tracking_id = mt_slots[iSlot].tracking_id;
+			}
+			else if((mt_slots[iSlot].tracking_id == -1) && (mt_slots[iSlot].previous_tracking_id != -1))
+			{
+				/* a finger has been released */
+				nyx_debug("[touchpanel] release finger");
+				update_finger(mt_slots[iSlot].nyx_finger, mt_slots[iSlot].posX, mt_slots[iSlot].posY, 0, &eventTime);
+
+				mt_slots[iSlot].nyx_finger = NULL;
+				mt_slots[iSlot].previous_tracking_id = mt_slots[iSlot].tracking_id;
+			}
+			else if(mt_slots[iSlot].tracking_id != -1)
+			{
+				nyx_debug("[touchpanel] update finger");
+				/* simple move gesture */
+				update_finger(mt_slots[iSlot].nyx_finger, mt_slots[iSlot].posX, mt_slots[iSlot].posY, 1, &eventTime);
+			}
+        }
+
+		gesture_state_machine_process(&eventTime, touchpanel_event_list.input+touchpanel_event_list.input_filled/sizeof(input_event_t), &num_events);
+	    touchpanel_event_list.input_filled+=num_events * sizeof(input_event_t);
+    }
+}
 
 static void handle_new_event(input_event_t *event)
 {
@@ -674,24 +873,44 @@ read_input_event(void)
 	fds[0].fd = touchpanel_event_fd;
 	fds[0].events = POLLIN;
 
-	int ret_val = poll(fds, 1, 0);
-
-	if (ret_val <= 0)
+	/* A multitouch panel is read through mtdev, which turns protocol A into the
+	   slots handle_new_mt_event() expects. */
+	if (ts_mtdev)
 	{
-		return 0;
-	}
+		touchpanel_event_list.input_filled = 0;
+		touchpanel_event_list.input_read = 0;
 
-	if (fds[0].revents & POLLIN)
-	{
-		rd = read(fds[0].fd, &pEvent, sizeof(input_event_t));
-
-		if (rd < 0 && errno != EINTR)
+		if (!mtdev_idle(ts_mtdev, touchpanel_event_fd, 0))
 		{
-			nyx_error(MSGID_NYX_MOD_TP_EVT_READ_ERR, 0, "Failed to read events from keypad event file");
-			return -1;
+			while (mtdev_get(ts_mtdev, touchpanel_event_fd, (struct input_event *)&pEvent, 1) > 0)
+			{
+				numEvents++;
+				handle_new_mt_event(&pEvent);
+			}
+		}
+	}
+	else
+	{
+		/* Everything else is read as single touch: ABS_X/ABS_Y and BTN_TOUCH. */
+		int ret_val = poll(fds, 1, 0);
+
+		if (ret_val <= 0)
+		{
+			return 0;
 		}
 
-		handle_new_event(&pEvent);
+		if (fds[0].revents & POLLIN)
+		{
+			rd = read(fds[0].fd, &pEvent, sizeof(input_event_t));
+
+			if (rd < 0 && errno != EINTR)
+			{
+				nyx_error(MSGID_NYX_MOD_TP_EVT_READ_ERR, 0, "Failed to read events from keypad event file");
+				return -1;
+			}
+
+			handle_new_event(&pEvent);
+		}
 	}
 
 	return numEvents;
