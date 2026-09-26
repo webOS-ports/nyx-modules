@@ -38,6 +38,6 @@ include_directories(include/internal)
 # A per-machine src/machine.cmake used to be copied in on top of this to
 # override the result. It is gone: every machine is described in that .inc now,
 # one line each, which is also what lets a new machine build without one.
-webos_nyx_module_provider(OW BATTERY CHARGER DEVICEINFO OSINFO SYSTEM DISPLAY SECURITY SECURITY2 GPS CEC MSMMTP ALS LED HAPTICS KEYS TOUCHPANEL TOUCHPANEL_MTDEV)
+webos_nyx_module_provider(OW BATTERY CHARGER DEVICEINFO OSINFO SYSTEM DISPLAY SECURITY SECURITY2 GPS CEC MSMMTP ALS LED HAPTICS KEYS TOUCHPANEL)
 
 add_subdirectory(src)

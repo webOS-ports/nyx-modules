@@ -134,6 +134,9 @@
 #define MSGID_NYX_MOD_TP_TOOMANY_ITEMS_ERR                                  "NYXTP_TOOMANY_ITEMS_ERR"
 #define MSGID_NYX_MOD_TP_OUT_OF_MEMORY                                      "NYXTP_OUT_OF_MEM_ERR"
 #define MSGID_NYX_MOD_TP_IGNORING_COORD                                     "NYXTP_IGNORING_COORD"
+#define MSGID_NYX_MOD_TP_MT_PROBE_ERR                                       "NYXTP_MT_PROBE_ERR"
+#define MSGID_NYX_MOD_TP_MTDEV_OPEN_ERR                                     "NYXTP_MTDEV_OPEN_ERR"
+#define MSGID_NYX_MOD_TP_SINGLE_TOUCH                                       "NYXTP_SINGLE_TOUCH"
 
 /** Touchpanel MTDEV */
 #define MSGID_NYX_QMUX_TP_COORDBUF_ERR                                      "NYXTP_COORDBUF_ERR"

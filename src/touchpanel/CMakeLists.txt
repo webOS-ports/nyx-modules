@@ -1,4 +1,6 @@
 # Copyright (c) 2010-2018 LG Electronics, Inc.
+# Copyright (c) 2018 Christophe Chapuis <chris.chapuis@gmail.com>
+# Copyright (c) 2018 Herman van Hazendonk <github.com@herrie.org>
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,4 +18,4 @@
 
 webos_build_nyx_module(TouchpanelMain
 		       SOURCES touchpanel.c touchpanel_common.c touchpanel_gestures.c
-		       LIBRARIES ${GLIB2_LDFLAGS} ${PMLOG_LDFLAGS} ${NYXLIB_LDFLAGS} -lrt -lpthread)
+		       LIBRARIES ${GLIB2_LDFLAGS} ${PMLOG_LDFLAGS} ${NYXLIB_LDFLAGS} ${MTDEV_LDFLAGS} -lrt -lpthread)

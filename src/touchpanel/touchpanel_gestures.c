@@ -1,4 +1,6 @@
 // Copyright (c) 2010-2018 LG Electronics, Inc.
+// Copyright (c) 2012 Simon Busch <morphis@gravedo.de>
+// Copyright (c) 2018 Christophe Chapuis <chris.chapuis@gmail.com>
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -234,31 +236,45 @@ reset_state_data(gesture_state_data_t *pStateData)
 	pStateData->insideTapRadius = true;
 }
 
-static void add_new_finger(int x, int y, int weight,
-                           const time_stamp_t *pCurTime)
+finger_t *add_new_finger(int x,int y,int weight, const time_stamp_t *pCurTime)
 {
-	finger_t *finger = g_queue_pop_head(&availableFingers);
+    finger_t *finger = g_queue_pop_head(&availableFingers);
 
-	if (!finger)
-	{
-		nyx_debug("No available finger buffers, rejecting finger");
-		return;
-	}
+    if(!finger) {
+            nyx_info(MSGID_NYX_MOD_TP_NO_FINGER_BUFF, 0, "No available finger buffers, rejecting finger\n");
+            return NULL;
+    }
+  //  ASSERT(finger->state.state == UNUSED);
+    reset_state_data(&finger->state);
+    finger->id = curFingerId++;
+    finger->timestamp = *pCurTime;
+    //hal_info"NEW: %ld,%ld\n",finger->id.time.tv_sec,finger->id.time.tv_nsec);
+    finger->minDist = 0;
+    finger->minDistId = 0;
+    finger->lastWeight = weight;
+    reset_coord_buffer(&finger->coords);
+    update_coord_buffer(&finger->coords, x, y, pCurTime);
+    nyx_debug("Finger down at %d,%d\n",x,y);
+    sFingers = g_list_prepend(sFingers,finger);
 
-	//  ASSERT(finger->state.state == UNUSED);
-	reset_state_data(&finger->state);
-	finger->id = curFingerId++;
-	finger->timestamp = *pCurTime;
-	//hal_info"NEW: %ld,%ld\n",finger->id.time.tv_sec,finger->id.time.tv_nsec);
-	finger->minDist = 0;
-	finger->minDistId = 0;
-	finger->lastWeight = weight;
-	reset_coord_buffer(&finger->coords);
-	update_coord_buffer(&finger->coords, x, y, pCurTime);
-	nyx_debug("Finger down at %d,%d", x, y);
-	sFingers = g_list_prepend(sFingers, finger);
+    return finger;
 }
 
+void
+update_finger(finger_t *finger, int x,int y,int weight, const time_stamp_t *pCurTime)
+{
+    if(finger == NULL)
+	return;
+
+    //Let's ignore the coordinate if there was a huge difference in weight
+    //This is a common scenario when the user is releasing his finger.
+    if(finger->lastWeight/2 < weight) {
+        update_coord_buffer(&finger->coords, x, y, pCurTime);
+    } else {
+        nyx_debug("Ignoring coordinate\n");
+    }   
+    finger->lastWeight = weight;
+}
 
 #define MAX_EVENTS_PER_UPDATE 100
 
@@ -342,7 +358,7 @@ gesture_state_machine(int *pXCoords, int *pYCoords, const int *pFingerWeights,
 			continue;
 		}
 
-		nyx_info(MSGID_NYX_MOD_TP_FINGER_WT, 0,"New coord (at: %d), %d,%d weight: %d, distance: %d",
+		nyx_debug("New coord (at: %d), %d,%d weight: %d, distance: %d",
 		         finger->minDistId, pXCoords[finger->minDistId], pYCoords[finger->minDistId],
 		         pFingerWeights[finger->minDistId], finger->minDist);
 
@@ -426,6 +442,31 @@ gesture_state_machine(int *pXCoords, int *pYCoords, const int *pFingerWeights,
 		set_event_params(&events[(*numEvents)++], (time_stamp_t *) pCurTime, EV_SYN, 0,
 		                 0);
 	}
+}
+
+void
+gesture_state_machine_process(const time_stamp_t* pCurTime, input_event_t *events, int *numEvents)
+{
+    /* Let's process the changes */
+    GList *list = g_list_first(sFingers);
+    while(list) {
+    	finger_t *finger = (finger_t*)list->data;
+        //-1 means to move the list element into the available list
+        if(gesture_state_machine_finger(finger,events,numEvents) == -1) {
+            finger->state.state = UNUSED;
+            list = g_list_next(list);
+            sFingers = g_list_remove(sFingers,finger);
+            g_queue_push_tail(&availableFingers,finger);
+        } else
+            list = g_list_next(list);
+    }
+
+    if (0 < *numEvents)
+    {
+        //ASSERT(numEvents < MAX_EVENTS_PER_UPDATE);
+        /* add EV_SYN event */
+        set_event_params(&events[(*numEvents)++], (time_stamp_t*) pCurTime, EV_SYN, 0, 0);
+    }
 }
 
 int gesture_state_machine_finger(finger_t *finger, input_event_t *events,
