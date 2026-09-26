@@ -400,13 +400,13 @@ get_display_res(int *x, int *y)
 }
 
 
-static float scaleX, scaleY;
+static float scaleX = 1.0f, scaleY = 1.0f;
 
 static int
 init_touchpanel(void)
 {
 	struct input_absinfo abs;
-	int  maxX, maxY, sXres = 0, sYres = 0, ret = -1;
+	int  maxX = 0, maxY = 0, sXres = 0, sYres = 0, ret = -1;
 
 	/*
 	 * luneos-device-config derives the touchscreen node - exactly one input
