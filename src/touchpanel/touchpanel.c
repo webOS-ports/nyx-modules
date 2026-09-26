@@ -331,46 +331,56 @@ static general_settings_t sGeneralSettings =
 	.fingerDownThreshold = 0
 };
 
-#define FRAMEBUF_DEVICE_NAME    "/dev/fb"
+/*
+ * "/dev/fb" is a Palm-era name. Mainline fbdev creates /dev/fb0, and a
+ * DRM-only board creates neither, so try the conventional node first and
+ * keep the old one as a fallback.
+ */
+static const char *const framebuf_devices[] = { "/dev/fb0", "/dev/fb" };
 
 static int
 get_display_res(int *x, int *y)
 {
-	int ret = -1;
 	struct fb_var_screeninfo varinfo;
+	unsigned int n;
 
-	int displayFd = open(FRAMEBUF_DEVICE_NAME, O_RDONLY);
-
-	if (displayFd < 0)
+	for (n = 0; n < G_N_ELEMENTS(framebuf_devices); n++)
 	{
-		nyx_error(MSGID_NYX_MOD_TP_OPEN_FB_ERR, 0, "Error in opening fb file");
-		return ret;
+		int displayFd = open(framebuf_devices[n], O_RDONLY);
+
+		if (displayFd < 0)
+		{
+			continue;
+		}
+
+		if (ioctl(displayFd, FBIOGET_VSCREENINFO, &varinfo) < 0)
+		{
+			nyx_error(MSGID_NYX_MOD_TP_VSCREEN_INFO_ERR, 0,
+			          "Error in getting var screen info from %s",
+			          framebuf_devices[n]);
+			close(displayFd);
+			continue;
+		}
+
+		close(displayFd);
+
+		*x = varinfo.xres;
+		*y = varinfo.yres;
+
+		return 0;
 	}
 
-	if (ioctl(displayFd, FBIOGET_VSCREENINFO, &varinfo) < 0)
-	{
-		nyx_error(MSGID_NYX_MOD_TP_VSCREEN_INFO_ERR, 0, "Error in getting var screen info");
-		goto exit;
-	}
-
-	*x = varinfo.xres;
-	*y = varinfo.yres;
-
-	ret = 0;
-
-exit:
-	close(displayFd);
-	return ret;
+	return -1;
 }
 
 
-static float scaleX, scaleY;
+static float scaleX = 1.0f, scaleY = 1.0f;
 
 static int
 init_touchpanel(void)
 {
 	struct input_absinfo abs;
-	int  maxX, maxY, sXres, sYres, ret = -1;
+	int  maxX = 0, maxY = 0, sXres = 0, sYres = 0, ret = -1;
 
 #ifdef TOUCHPANEL_DEVICE
 	touchpanel_event_fd = open(TOUCHPANEL_DEVICE, O_RDWR | O_NONBLOCK);
@@ -408,15 +418,31 @@ init_touchpanel(void)
 	init_vbox_touchpanel();
 	init_gesture_state_machine(&sGeneralSettings, 1);
 
-	/* Get the display resolution */
-	if (get_display_res(&sXres, &sYres) < 0)
+	/*
+	 * The display resolution is only used to scale the reported coordinates
+	 * into panel pixels, so not having it is not a reason to refuse to open.
+	 * It used to be one: a failure here returned NYX_ERROR_GENERIC out of
+	 * nyx_module_open, and on every machine that has no framebuffer node -
+	 * which since the move to DRM is all of them - that left
+	 * luna-displaymanager with no touchpanel handle at all. Touching the
+	 * screen then never refreshed its inactivity timer, so the display
+	 * dimmed, blanked and let the device suspend under the user's finger.
+	 *
+	 * Fall back to the touchscreen's own coordinate space. The one consumer
+	 * of these events cares that a finger is down, not where it is.
+	 */
+	if (maxX > 0 && maxY > 0 && get_display_res(&sXres, &sYres) == 0)
 	{
-		nyx_error(MSGID_NYX_MOD_TP_RES_ERR, 0, "Failed to get display resolution");
-		goto error;
+		scaleX = (float)sXres / (float)maxX;
+		scaleY = (float)sYres / (float)maxY;
 	}
-
-	scaleX = (float)sXres / (float)maxX;
-	scaleY = (float)sYres / (float)maxY;
+	else
+	{
+		nyx_info(MSGID_NYX_MOD_TP_RES_ERR, 0,
+		         "No display resolution available, reporting touch coordinates unscaled");
+		scaleX = 1.0f;
+		scaleY = 1.0f;
+	}
 
 	return 0;
 error:
