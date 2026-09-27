@@ -192,7 +192,7 @@ static bool file_write_int(const gchar *path, int value)
 	return true;
 }
 
-static bool mtk_ioctl(unsigned long cmd, int arg, const char *what)
+static bool mtk_ioctl_quiet(unsigned long cmd, int arg)
 {
 	struct mtk_flashlight_user_arg fl_arg;
 
@@ -210,7 +210,12 @@ static bool mtk_ioctl(unsigned long cmd, int arg, const char *what)
 	fl_arg.ct_id = 1;
 	fl_arg.arg = arg;
 
-	if (ioctl(mtk_fd, cmd, &fl_arg) < 0)
+	return ioctl(mtk_fd, cmd, &fl_arg) >= 0;
+}
+
+static bool mtk_ioctl(unsigned long cmd, int arg, const char *what)
+{
+	if (!mtk_ioctl_quiet(cmd, arg))
 	{
 		nyx_error(MSGID_NYX_MOD_LED_OPENFILE_ERR, 0, "%s failed on %s: %s", what,
 		          MTK_FLASHLIGHT_DEV, strerror(errno));
@@ -220,8 +225,44 @@ static bool mtk_ioctl(unsigned long cmd, int arg, const char *what)
 	return true;
 }
 
+/*
+ * Issue a command the driver underneath may simply not implement.
+ *
+ * flashlight-core dispatches most commands straight to whichever driver
+ * registered, and the thinner ones answer only FLASH_IOC_SET_ONOFF: the Q25's
+ * flashlight-gpio-v4l2.c has a single case in its handler and returns -ENOTTY
+ * for everything else, while its SET_DUTY never even reaches it, failing inside
+ * fl_set_level(). Nothing is lost on such a device. SET_ONOFF there drives the
+ * mode and enable pins itself, at the driver's own fixed torch current, so the
+ * light still comes on and stays on - which is the whole contract of this
+ * module. Treating these as fatal instead cost the Q25 its torch entirely: the
+ * probe succeeded, this call did not, and SET_ONOFF was never reached.
+ *
+ * Warn once rather than per call, since a torch app toggling in a loop would
+ * otherwise fill the log with a line that says nothing new after the first.
+ */
+static void mtk_ioctl_optional(unsigned long cmd, int arg, const char *what,
+                               bool *warned)
+{
+	if (mtk_ioctl_quiet(cmd, arg) || *warned)
+	{
+		return;
+	}
+
+	*warned = true;
+	nyx_info(MSGID_NYX_MOD_LED_NODEVICE_ERR, 0,
+	         "%s not supported by this flashlight driver (%s); carrying on without it",
+	         what, strerror(errno));
+}
+
 static bool mtk_set(int brightness)
 {
+	/*
+	 * Per driver, not per call: whether these two are implemented is a property
+	 * of the flashlight driver bound at boot and cannot change under us.
+	 */
+	static bool warned_timeout = false;
+	static bool warned_duty = false;
 	int duty;
 
 	if (brightness == 0)
@@ -251,13 +292,16 @@ static bool mtk_set(int brightness)
 	}
 
 	/*
-	 * Zero timeout before anything else. The driver arms an hrtimer from this
-	 * value and switches the light off when it expires; a torch that turns
-	 * itself off after whatever the last caller left here is not a torch.
+	 * Zero timeout before anything else. A driver that implements this arms an
+	 * hrtimer from it and switches the light off when it expires; a torch that
+	 * turns itself off after whatever the last caller left here is not a torch.
+	 * One that does not implement it has no such timer to disarm.
 	 */
-	if (!mtk_ioctl(MTK_IOC_SET_TIME_OUT_MS, 0, "SET_TIME_OUT_TIME_MS(0)") ||
-	        !mtk_ioctl(MTK_IOC_SET_DUTY, duty, "SET_DUTY") ||
-	        !mtk_ioctl(MTK_IOC_SET_ONOFF, 1, "SET_ONOFF(1)"))
+	mtk_ioctl_optional(MTK_IOC_SET_TIME_OUT_MS, 0, "SET_TIME_OUT_TIME_MS(0)",
+	                   &warned_timeout);
+	mtk_ioctl_optional(MTK_IOC_SET_DUTY, duty, "SET_DUTY", &warned_duty);
+
+	if (!mtk_ioctl(MTK_IOC_SET_ONOFF, 1, "SET_ONOFF(1)"))
 	{
 		mtk_ioctl(MTK_IOC_X_SET_DRIVER, 0, "X_SET_DRIVER(0)");
 		return false;
