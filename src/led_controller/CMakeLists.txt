@@ -20,4 +20,18 @@ include_directories(.)
 
 webos_build_nyx_module(MicroControllerLEDsDefault
 		       SOURCES led_controller.c
-		       LIBRARIES ${GLIB2_LDFLAGS} ${PMLOG_LDFLAGS} ${NYXLIB_LDFLAGS} ${UDEV_LDFLAGS} -lrt -lpthread)
+		       LIBRARIES ${GLIB2_LDFLAGS} ${PMLOG_LDFLAGS} ${NYXLIB_LDFLAGS} ${UDEV_LDFLAGS} -lrt -lpthread -ldl
+		       # This module can dlopen() the Android lights HAL, which pulls
+		       # Android .so's into their own linker namespace. nyx_device_close()
+		       # dlclose()s the nyx module afterwards, and unloading it while that
+		       # Android-side state still references it segfaults - every close on
+		       # the LED controller died this way on tissot, after the light had
+		       # already been set. -z nodelete makes the dlclose a no-op for this
+		       # module, which costs one mapping and is the usual remedy for a
+		       # library that cannot safely be unloaded.
+		       #
+		       # Unconditional, although only a halium machine ever loads that
+		       # HAL: which backend is used is a runtime decision, so there is no
+		       # build-time answer to condition this on, and one leaked mapping on
+		       # a machine that never opens libhardware is the cheaper mistake.
+		       -Wl,-z,nodelete)
