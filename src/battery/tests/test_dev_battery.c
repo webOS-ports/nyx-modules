@@ -1459,6 +1459,63 @@ test_battery_full_design(/*api_test_fixture *fixture, gconstpointer unused*/)
 	detect_battery_sysfs_paths();
 	g_assert_true(-1 == battery_full_design(BATTERY_PRIMARY));
 
+	//
+	// A driver reporting the two attributes in different units. Both of
+	// these are real readings - the first from a MediaTek Halium port, the
+	// second from a radon - where charge_full_design comes back a factor of
+	// ten below charge_full. Taken at face value they say the pack is
+	// holding ten times what it shipped with.
+	//
+	reset_battery_path_retvals();
+	test_batt_charge_full_path_exists = true;
+	test_batt_charge_full_path_retval = 2951000;
+	test_batt_charge_full_design_path_exists = true;
+	test_batt_charge_full_design_path_retval = 295000;
+	g_assert_true(-1 == battery_full_design(BATTERY_PRIMARY));
+
+	reset_battery_path_retvals();
+	test_batt_charge_full_path_exists = true;
+	test_batt_charge_full_path_retval = 4370000;
+	test_batt_charge_full_design_path_exists = true;
+	test_batt_charge_full_design_path_retval = 437000;
+	g_assert_true(-1 == battery_full_design(BATTERY_PRIMARY));
+
+	// The mismatch the other way round is just as impossible
+	reset_battery_path_retvals();
+	test_batt_charge_full_path_exists = true;
+	test_batt_charge_full_path_retval = 295000;
+	test_batt_charge_full_design_path_exists = true;
+	test_batt_charge_full_design_path_retval = 2951000;
+	g_assert_true(-1 == battery_full_design(BATTERY_PRIMARY));
+
+	// A genuinely worn pack is not a unit mismatch and still answers. 1500
+	// of 3080 mAh is a pack at not quite half of what it shipped with.
+	reset_battery_path_retvals();
+	test_batt_charge_full_path_exists = true;
+	test_batt_charge_full_path_retval = 1500000;
+	test_batt_charge_full_design_path_exists = true;
+	test_batt_charge_full_design_path_retval = 3080000;
+	g_assert_true((3080000 / 1000.0) == battery_full_design(BATTERY_PRIMARY));
+
+	// Nor is a gauge that has learnt slightly above the design figure, which
+	// is ordinary on a new pack.
+	reset_battery_path_retvals();
+	test_batt_charge_full_path_exists = true;
+	test_batt_charge_full_path_retval = 3200000;
+	test_batt_charge_full_design_path_exists = true;
+	test_batt_charge_full_design_path_retval = 3080000;
+	g_assert_true((3080000 / 1000.0) == battery_full_design(BATTERY_PRIMARY));
+
+	// With no charge_full to check against, the design figure is reported as
+	// read - there is nothing to contradict it.
+	reset_battery_path_retvals();
+	test_batt_charge_full_path_exists = false;
+	test_batt_charge_full_design_path_exists = true;
+	test_batt_charge_full_design_path_retval = 295000;
+	battery_forget_all();
+	detect_battery_sysfs_paths();
+	g_assert_true((295000 / 1000.0) == battery_full_design(BATTERY_PRIMARY));
+
 	forget_batteries();
 }
 

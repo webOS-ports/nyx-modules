@@ -45,6 +45,16 @@
 #define CHARGE_MAX_TEMPERATURE_C 57
 #define BATTERY_MAX_TEMPERATURE_C  60
 
+/*
+ * How far charge_full may sit from charge_full_design before the two are
+ * taken to be in different units rather than describing a worn pack. A
+ * battery at a fifth of what it shipped with is scrap but physically real;
+ * one holding twice what it shipped with is not, and a decimal mismatch
+ * lands an order of magnitude outside either bound.
+ */
+#define BATTERY_DESIGN_RATIO_MIN 0.2
+#define BATTERY_DESIGN_RATIO_MAX 2.0
+
 #define PATH_LEN 256
 
 /*
@@ -400,7 +410,8 @@ double battery_full40(int index)
 double battery_full_design(int index)
 {
 	battery_device_t *b = battery_at(index);
-	int charge_full_design;
+	int charge_full_design, charge_full;
+	double design;
 
 	if (!b ||
 	        (charge_full_design =
@@ -410,7 +421,52 @@ double battery_full_design(int index)
 	}
 
 	/* Divide the value by 1000 to convert from uAh to mAh */
-	return (double) charge_full_design / 1000;
+	design = (double) charge_full_design / 1000;
+
+	/*
+	 * Not every driver reports this attribute in the unit the ABI says. Two
+	 * unrelated Halium ports - a MediaTek device and a radon - report
+	 * charge_full in uAh and charge_full_design a factor of ten below it:
+	 *
+	 *     charge_full = 2951000   charge_full_design = 295000
+	 *     charge_full = 4370000   charge_full_design = 437000
+	 *
+	 * charge_full is the one to believe on both; dividing charge_counter by
+	 * it gives the percentage the "capacity" attribute reports. Taken at
+	 * face value the design figure makes a phone look like it shipped with a
+	 * 295 mAh pack and is now holding ten times that, which downstream comes
+	 * out as a battery at 1000% of its original capacity.
+	 *
+	 * So cross-check the two before believing the design figure. A pack's
+	 * present capacity is somewhere between a worn-out fraction of what it
+	 * shipped with and a little over it - never several times it - so a
+	 * ratio outside that band is two different units rather than a
+	 * measurement, and there is no answer to give.
+	 *
+	 * Deliberately not rescaled by the factor of ten that would make these
+	 * two devices line up: the attribute would still be one this driver
+	 * cannot be trusted about, and a guessed correction that happens to look
+	 * plausible is worse than saying nothing. Nothing is lost on either
+	 * device, where the corrected figure would equal charge_full and so
+	 * report a gauge that does not measure wear anyway.
+	 */
+	if (g_file_test(b->charge_full_path, G_FILE_TEST_EXISTS) &&
+	        (charge_full = nyx_utils_read_value(b->charge_full_path)) > 0)
+	{
+		double full = (double) charge_full / 1000;
+
+		if (full > design * BATTERY_DESIGN_RATIO_MAX ||
+		        full < design * BATTERY_DESIGN_RATIO_MIN)
+		{
+			nyx_warn(MSGID_NYX_MOD_BATT_DESIGN_UNIT, 0,
+			         "battery %d: charge_full %.0f mAh and charge_full_design "
+			         "%.0f mAh are not the same unit; reporting no design "
+			         "capacity", index, full, design);
+			return -1;
+		}
+	}
+
+	return design;
 }
 
 /**

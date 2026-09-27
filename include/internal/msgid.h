@@ -34,6 +34,7 @@
 #define MSGID_NYX_MOD_BATT_OUT_OF_MEMORY                                    "NYXBAT_OUT_OF_MEM"
 #define MSGID_NYX_MOD_BATT_DETECTED                                         "NYXBAT_DETECTED"
 #define MSGID_NYX_MOD_BATT_TOO_MANY                                         "NYXBAT_TOO_MANY"
+#define MSGID_NYX_MOD_BATT_DESIGN_UNIT                                      "NYXBAT_DESIGN_UNIT"
 
 /** Charger*/
 #define MSGID_NYX_MOD_CHARG_ERR                                             "NYXCHG_ERR"
