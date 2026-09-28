@@ -56,6 +56,7 @@ typedef struct {
 	nyx_haptics_device_t _parent;
 	gchar *path;                  /* path for duration */
 	gchar *path_activation;       /* path for activating the vibrator */
+	gchar *path_state;            /* leds class: brightness to hold while active */
 	int fd_ioctl;
 	struct ff_effect ff;
 	guint fulltimeoutwatch;
@@ -162,6 +163,7 @@ nyx_error_t nyx_module_open(nyx_instance_t instance, nyx_device_t** device)
 		/* found it ! */
 		haptics_device->path = g_build_filename(vibrator_path, "enable", NULL);
 		haptics_device->path_activation = NULL; /* for clarity's sake */
+		haptics_device->path_state = NULL;
 	}
 	else {
 		/* try the leds class vibrator */
@@ -170,6 +172,7 @@ nyx_error_t nyx_module_open(nyx_instance_t instance, nyx_device_t** device)
 		if (vibrator_path) {
 			haptics_device->path = g_build_filename(vibrator_path, "duration", NULL);
 			haptics_device->path_activation = g_build_filename(vibrator_path, "activate", NULL);
+			haptics_device->path_state = g_build_filename(vibrator_path, "state", NULL);
 		}
 		else {
 			haptics_device->fd_ioctl = open(HAPTICS_VIBRATOR_GPIO_PATH, O_RDWR | O_CLOEXEC);
@@ -205,6 +208,7 @@ nyx_error_t nyx_module_close(nyx_device_t* device)
 
 	g_free(haptics_device->path);
 	if(haptics_device->path_activation) g_free(haptics_device->path_activation);
+	if(haptics_device->path_state) g_free(haptics_device->path_state);
 	g_free(haptics_device);
 
 	return NYX_ERROR_NONE;
@@ -242,6 +246,19 @@ static gboolean enable_vibrator(haptics_device_t *device, int duration)
 		device->on = FALSE;
 		return file_set_contents(device->path_activation, "0", 1);
 	}
+
+	/* The leds class exposes the vibrator through the "transient" trigger,
+	 * whose "state" is the brightness to hold *while* the pulse runs; when
+	 * the timer expires the LED is restored to the opposite of it. The file
+	 * defaults to 0, so activating without setting it first drives the motor
+	 * off for the duration and then hard on -- for good. Nothing else can
+	 * clear that either: once the timer has fired the trigger considers
+	 * itself inactive, so a later write of 0 to "activate" is ignored. Write
+	 * it every time rather than once at open: it is a single small write,
+	 * and whatever else may have touched the node in between does not get to
+	 * decide whether the phone stops buzzing. */
+	if (device->path_state)
+		file_set_contents(device->path_state, "1", 1);
 
 	gchar *content = g_strdup_printf("%d", duration);
 	ret = file_set_contents(device->path, content, strlen(content));
