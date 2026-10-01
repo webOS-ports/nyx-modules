@@ -830,26 +830,22 @@ bool battery_is_present(int index)
 /**
  * @brief Point a path at the BMS's copy of an attribute if the battery has none.
  *
- * @param path a "<supply>/<attribute>" path, rewritten in place when the
- *             attribute is missing where it points and a power_supply of type
- *             "BMS" has one of the same name. Left alone otherwise, so the
- *             caller still ends up with the path it asked for and the usual
- *             "does not exist" handling applies.
+ * The attribute is named rather than recovered from the path, because an
+ * attribute the battery does not have leaves the path empty - that is what
+ * _optional_attr_path() does and the whole reason to come looking here - so
+ * there is no name left in it to read back.
+ *
+ * @param path  rewritten in place when it is empty and a power_supply of type
+ *              "BMS" carries the attribute. Left alone when it already points
+ *              somewhere, so a battery that has the attribute keeps it.
+ * @param attribute the power_supply attribute name to look for under "BMS".
  */
-static void battery_prefer_bms_path(char *path)
+static void battery_prefer_bms_path(char *path, const char *attribute)
 {
-	const char *attribute;
 	char *bms_path;
 	char candidate[PATH_LEN];
 
-	if (!path || g_file_test(path, G_FILE_TEST_EXISTS))
-	{
-		return;
-	}
-
-	attribute = strrchr(path, '/');
-
-	if (!attribute)
+	if (!path || !attribute || path[0])
 	{
 		return;
 	}
@@ -861,7 +857,7 @@ static void battery_prefer_bms_path(char *path)
 		return;
 	}
 
-	snprintf(candidate, PATH_LEN, "%s%s", bms_path, attribute);
+	snprintf(candidate, PATH_LEN, "%s/%s", bms_path, attribute);
 
 	if (g_file_test(candidate, G_FILE_TEST_EXISTS))
 	{
@@ -952,8 +948,9 @@ static void battery_set_paths(battery_device_t *b, const char *sysfs_path,
 	 * module picked and stay there, so nothing starts silently mixing two
 	 * sources for the same instant.
 	 */
-	battery_prefer_bms_path(b->charge_full_path);
-	battery_prefer_bms_path(b->charge_full_design_path);
+	battery_prefer_bms_path(b->charge_full_path, "charge_full");
+	battery_prefer_bms_path(b->charge_full_design_path,
+	                        "charge_full_design");
 }
 
 static bool battery_already_known(const char *sysfs_path)
