@@ -218,6 +218,25 @@ static int _read_optional_value(const char *path)
 	return nyx_utils_read_value(path);
 }
 
+/*
+ * The driver's own account of what the pack is doing, in the strings the
+ * power_supply class defines: "Charging", "Discharging", "Not charging",
+ * "Full" or "Unknown". false when the supply exports no status at all, which
+ * is the one case where callers have to guess instead.
+ */
+static bool _battery_status(int index, char *out, size_t len)
+{
+	battery_device_t *b = battery_at(index);
+
+	if (!b || !b->status_path[0]
+	        || FileGetString(b->status_path, out, len) < 0)
+	{
+		return false;
+	}
+
+	return true;
+}
+
 /**
  * @brief Read battery percentage
  *
@@ -366,25 +385,52 @@ int battery_voltage(int index)
 int battery_current(int index)
 {
 	battery_device_t *b = battery_at(index);
+	char status[STATUS_LEN];
 	double current = 0;
 
 	/*
-	 * The Linux power_supply class exports current_now as a *signed*
-	 * value in microamps: positive while the battery is charging,
-	 * negative while it is discharging. nyx_utils_read_value() collapses
-	 * "value is negative" with "read failed", which means battery_current
-	 * returns -1 on every Linux-mainline target the moment the device
-	 * runs on battery — masking the real value and confusing
-	 * batteryStatusQuery consumers in cardshell / powerd.
-	 *
-	 * Use FileGetDouble() instead, which signals errors via its return
-	 * code and stores the parsed value through the out-parameter, so
-	 * negative readings are passed through cleanly.
+	 * current_now is signed, and nyx_utils_read_value() collapses "value is
+	 * negative" with "read failed", which reported -1 the whole time a device
+	 * ran on battery. FileGetDouble() signals errors through its return code
+	 * instead and stores the reading through the out-parameter, so a negative
+	 * one survives the trip.
 	 */
 	if (!b || !b->current_path[0]
 	        || FileGetDouble(b->current_path, &current) < 0)
 	{
 		return -1;
+	}
+
+	/*
+	 * Which sign means charging is not fixed by the power_supply ABI, and
+	 * drivers split both ways: mainline gauges report charging as positive,
+	 * Qualcomm's downstream charger and fuel-gauge drivers report it as
+	 * negative. A sargo charging at 410 mA reads current_now = -410156.
+	 *
+	 * Publishing that raw just moves the question to every consumer, and they
+	 * answer it inconsistently - batteryd's own poll loop and the settings
+	 * app both take a negative current for discharging, so a charging sargo
+	 * came out as "Current: -410 mA (discharging)" beside "Status: Charging".
+	 *
+	 * So normalise it here, once, to the convention the consumers already
+	 * assume: positive is into the pack. status carries the direction and
+	 * current_now the magnitude. "Not charging", "Full" and "Unknown" say
+	 * nothing about which way a current is flowing, so leave those alone
+	 * rather than invent a direction for them - as with a driver that exports
+	 * no status at all.
+	 */
+	if (_battery_status(index, status, sizeof(status)))
+	{
+		double magnitude = (current < 0) ? -current : current;
+
+		if (0 == g_ascii_strcasecmp(status, "Charging"))
+		{
+			current = magnitude;
+		}
+		else if (0 == g_ascii_strcasecmp(status, "Discharging"))
+		{
+			current = -magnitude;
+		}
 	}
 
 	/* Microamps, for the same reason as the voltage above: batteryd
@@ -428,11 +474,9 @@ int battery_avg_current(int index)
  */
 int battery_charging_state(int index)
 {
-	battery_device_t *b = battery_at(index);
 	char status[STATUS_LEN];
 
-	if (!b || !b->status_path[0]
-	        || FileGetString(b->status_path, status, sizeof(status)) < 0)
+	if (!_battery_status(index, status, sizeof(status)))
 	{
 		return -1;
 	}
