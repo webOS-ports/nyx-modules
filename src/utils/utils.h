@@ -23,6 +23,20 @@
 
 int FileGetString(const char *path, char *ret_string, size_t maxlen);
 int FileGetDouble(const char *path, double *ret_data);
+/*
+ * Locate a power_supply by its node name rather than by the type it reports.
+ *
+ * Needed because the type is not dependable for every supply: Qualcomm's
+ * power_supply_sysfs.c maps POWER_SUPPLY_TYPE_BMS, _MAIN and _PARALLEL all onto
+ * the string "Mains", so a fuel gauge registered as .type = POWER_SUPPLY_TYPE_BMS
+ * reads back as "Mains" and cannot be told apart from an AC supply. Its node
+ * name is fixed by the driver and is what the kernel actually guarantees.
+ *
+ * Returns a newly allocated path, or NULL when no such node exists. Free with
+ * g_free().
+ */
+char *find_power_supply_sysfs_path_by_name(const char *name);
+
 char *find_power_supply_sysfs_path(const char *device_type);
 
 /**

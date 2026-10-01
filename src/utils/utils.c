@@ -132,6 +132,26 @@ end:
 	return ret;
 }
 
+char *find_power_supply_sysfs_path_by_name(const char *name)
+{
+	gchar *candidate;
+
+	if (!name)
+	{
+		return NULL;
+	}
+
+	candidate = g_build_filename(POWER_SUPPLY_SYSFS_DIR, name, NULL);
+
+	if (g_file_test(candidate, G_FILE_TEST_IS_DIR))
+	{
+		return candidate;
+	}
+
+	g_free(candidate);
+	return NULL;
+}
+
 char *find_power_supply_sysfs_path(const char *device_type)
 {
 	GError *gerror = NULL;

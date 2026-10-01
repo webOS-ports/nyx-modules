@@ -835,6 +835,10 @@ bool battery_is_present(int index)
  * _optional_attr_path() does and the whole reason to come looking here - so
  * there is no name left in it to read back.
  *
+ * The gauge is found by node name, not by type: Qualcomm's kernels map
+ * POWER_SUPPLY_TYPE_BMS onto the sysfs string "Mains", so asking for a supply
+ * of type "BMS" never matches anything.
+ *
  * @param path  rewritten in place when it is empty and a power_supply of type
  *              "BMS" carries the attribute. Left alone when it already points
  *              somewhere, so a battery that has the attribute keeps it.
@@ -850,7 +854,7 @@ static void battery_prefer_bms_path(char *path, const char *attribute)
 		return;
 	}
 
-	bms_path = find_power_supply_sysfs_path("BMS");
+	bms_path = find_power_supply_sysfs_path_by_name("bms");
 
 	if (!bms_path)
 	{

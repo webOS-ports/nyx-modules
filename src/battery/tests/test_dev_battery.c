@@ -123,6 +123,18 @@ char *test_find_power_supply_sysfs_path_retval = TEST_BATT_NODE;
 // NULL means "this board has no BMS supply", which is the common case.
 char *test_find_power_supply_bms_retval = NULL;
 
+char *find_power_supply_sysfs_path_by_name(const char *name)
+{
+	// The gauge is looked up by node name now; the fixture calls its node "BMS".
+	if (name && 0 == g_strcmp0(name, "bms"))
+	{
+		return test_find_power_supply_bms_retval
+		       ? g_strdup(test_find_power_supply_bms_retval) : NULL;
+	}
+
+	return NULL;
+}
+
 char *find_power_supply_sysfs_path(const char *device_type)
 {
 	// Asked for by type, and the module asks for two different ones, so the
