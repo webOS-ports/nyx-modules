@@ -97,6 +97,10 @@ int test_battery_temperature_retval = 38;
 int test_battery_voltage_retval = 3928;
 int test_battery_current_retval = 85;
 int test_battery_avg_current_retval = 85;
+// -1 is "this driver exports no status", which is what sends
+// battery_read_status_at() to the current-sign fallback the cases below
+// were written against.
+int test_battery_charging_state_retval = -1;
 double test_battery_full40_retval = 1150.000;
 // A pack that shipped at 1230 mAh and now holds 1150: worn, but working.
 double test_battery_full_design_retval = 1230.000;
@@ -156,6 +160,11 @@ int battery_current(int index)
 int battery_avg_current(int index)
 {
 	return test_battery_avg_current_retval;
+}
+
+int battery_charging_state(int index)
+{
+	return test_battery_charging_state_retval;
 }
 
 double battery_full40(int index)
@@ -442,6 +451,56 @@ void test_nyx_device_callback_function(nyx_device_handle_t device,
 {
 	return;
 }
+
+//
+// The charging flag comes from the driver's status, not from which way the
+// current happens to be signed. A Qualcomm pack charging at 410 mA reports
+// current_now negative with status "Charging"; a mainline one reports it
+// positive. Both have to come out charging, and only a driver that exports no
+// status at all may fall back to the sign.
+//
+static void test_battery_charging_from_status(api_test_fixture *fixture,
+        gconstpointer unused)
+{
+	nyx_battery_status_t testBatteryStatus;
+	int saved_charging = test_battery_charging_state_retval;
+	int saved_current = test_battery_avg_current_retval;
+
+	// status says charging while the current reads negative, as on sargo
+	test_battery_charging_state_retval = 1;
+	test_battery_avg_current_retval = -410;
+	resetTestBatteryStatus(&testBatteryStatus);
+	g_assert_true(NYX_ERROR_NONE == battery_query_battery_status(
+	                  fixture->fixture_device, &testBatteryStatus));
+	g_assert_true(testBatteryStatus.charging);
+
+	// status says not charging while the current reads positive
+	test_battery_charging_state_retval = 0;
+	test_battery_avg_current_retval = 410;
+	resetTestBatteryStatus(&testBatteryStatus);
+	g_assert_true(NYX_ERROR_NONE == battery_query_battery_status(
+	                  fixture->fixture_device, &testBatteryStatus));
+	g_assert_false(testBatteryStatus.charging);
+
+	// no status to ask: fall back to the sign of the current
+	test_battery_charging_state_retval = -1;
+	test_battery_avg_current_retval = 410;
+	resetTestBatteryStatus(&testBatteryStatus);
+	g_assert_true(NYX_ERROR_NONE == battery_query_battery_status(
+	                  fixture->fixture_device, &testBatteryStatus));
+	g_assert_true(testBatteryStatus.charging);
+
+	test_battery_charging_state_retval = -1;
+	test_battery_avg_current_retval = -410;
+	resetTestBatteryStatus(&testBatteryStatus);
+	g_assert_true(NYX_ERROR_NONE == battery_query_battery_status(
+	                  fixture->fixture_device, &testBatteryStatus));
+	g_assert_false(testBatteryStatus.charging);
+
+	test_battery_charging_state_retval = saved_charging;
+	test_battery_avg_current_retval = saved_current;
+}
+
 
 //
 // Test for the battery_register_battery_status_callback API
@@ -735,6 +794,8 @@ int main(int argc, char **argv)
 	ADD_APITEST("/battery/api/battery_query_battery_info",
 	            test_battery_query_battery_info);
 	ADD_APITEST("/battery/api/battery_fake_mode", test_battery_fake_mode);
+	ADD_APITEST("/battery/api/battery_charging_from_status",
+	            test_battery_charging_from_status);
 	g_test_add_func("/battery/api/callback_cleared_on_close",
 	                test_callback_cleared_on_close);
 

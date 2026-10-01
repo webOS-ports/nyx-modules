@@ -57,6 +57,9 @@
 
 #define PATH_LEN 256
 
+/* Longest power_supply status string is "Not charging". */
+#define STATUS_LEN 32
+
 /*
  * Two is what the hardware this was written for has - a phone and the battery
  * in its keyboard - and the cap only bounds how much of a misconfigured
@@ -95,6 +98,7 @@ typedef struct
 	char voltage_path[PATH_LEN];
 	char current_path[PATH_LEN];
 	char present_path[PATH_LEN];
+	char status_path[PATH_LEN];
 	char fake_battery_path[PATH_LEN];
 
 	/* last values seen, so _handle_event only wakes callers on a change */
@@ -400,6 +404,40 @@ int battery_avg_current(int index)
 {
 	// return battery_current for this device unless we have a way to separately read "average" current
 	return battery_current(index);
+}
+
+/**
+ * @brief Whether the pack is taking charge, from the driver's own verdict.
+ *
+ * The sign of current_now cannot answer this. The power_supply ABI does not
+ * fix which direction is positive and drivers split both ways: mainline
+ * gauges report charging as positive, while Qualcomm's downstream charger
+ * and fuel-gauge drivers report it as negative. A sargo charging at 410 mA
+ * reads current_now = -410156 with status = "Charging", so a caller testing
+ * the sign for "> 0" calls that discharging - and one testing for "< 0"
+ * would get the PinePhone wrong the same way.
+ *
+ * The status attribute is the driver saying it outright, in the same strings
+ * the charger module already matches on, so prefer it and leave the sign to
+ * the caller as a fallback for a driver that does not export it.
+ *
+ * "Full" is deliberately not charging: the pack is connected but no longer
+ * taking charge, and the charger module raises charge-complete separately.
+ *
+ * @retval 1 charging, 0 not charging, -1 no status attribute to ask.
+ */
+int battery_charging_state(int index)
+{
+	battery_device_t *b = battery_at(index);
+	char status[STATUS_LEN];
+
+	if (!b || !b->status_path[0]
+	        || FileGetString(b->status_path, status, sizeof(status)) < 0)
+	{
+		return -1;
+	}
+
+	return (0 == g_ascii_strcasecmp(status, "Charging")) ? 1 : 0;
 }
 
 /**
@@ -777,6 +815,7 @@ static void battery_set_paths(battery_device_t *b, const char *sysfs_path,
 	_optional_attr_path(b->voltage_path, sysfs_path, "voltage_now");
 	_optional_attr_path(b->current_path, sysfs_path, "current_now");
 	_optional_attr_path(b->present_path, sysfs_path, "present");
+	_optional_attr_path(b->status_path, sysfs_path, "status");
 	_optional_attr_path(b->fake_battery_path, sysfs_path, "pseudo_batt");
 	_optional_attr_path(b->health_path, sysfs_path, "health");
 
