@@ -100,6 +100,7 @@ typedef struct
 	char current_avg_path[PATH_LEN];
 	char present_path[PATH_LEN];
 	char status_path[PATH_LEN];
+	char capacity_level_path[PATH_LEN];
 	char fake_battery_path[PATH_LEN];
 
 	/* last values seen, so _handle_event only wakes callers on a change */
@@ -228,14 +229,41 @@ static int _read_optional_value(const char *path)
 static bool _battery_status(int index, char *out, size_t len)
 {
 	battery_device_t *b = battery_at(index);
+	char level[STATUS_LEN];
+	bool have_status;
 
-	if (!b || !b->status_path[0]
-	        || FileGetString(b->status_path, out, len) < 0)
+	if (!b)
 	{
 		return false;
 	}
 
-	return true;
+	have_status = b->status_path[0]
+	              && FileGetString(b->status_path, out, len) >= 0;
+
+	/*
+	 * capacity_level has the last word when it says "Full", because a driver
+	 * that reports a full pack and a status of "Charging" at the same time is
+	 * contradicting itself and the capacity is the half to believe. The
+	 * MindPhone's MT6739 gauge does exactly that: it sits at capacity 100 with
+	 * capacity_level "Full" and never moves status off "Charging", so taking
+	 * status at its word reported a full battery as still charging for as long
+	 * as it stayed on the cable.
+	 *
+	 * Reported as "Full" rather than as "not charging" so the one override
+	 * answers both questions this is asked: the charging flag goes false, and
+	 * the current keeps its sign unexamined, which is already what "Full"
+	 * means to the normalisation below - a pack that is done charging is not
+	 * obviously moving charge in either direction.
+	 */
+	if (b->capacity_level_path[0]
+	        && FileGetString(b->capacity_level_path, level, sizeof(level)) >= 0
+	        && 0 == g_ascii_strcasecmp(level, "Full"))
+	{
+		g_strlcpy(out, "Full", len);
+		return true;
+	}
+
+	return have_status;
 }
 
 /**
@@ -890,6 +918,8 @@ static void battery_set_paths(battery_device_t *b, const char *sysfs_path,
 	_optional_attr_path(b->current_avg_path, sysfs_path, "current_avg");
 	_optional_attr_path(b->present_path, sysfs_path, "present");
 	_optional_attr_path(b->status_path, sysfs_path, "status");
+	_optional_attr_path(b->capacity_level_path, sysfs_path,
+	                    "capacity_level");
 	_optional_attr_path(b->fake_battery_path, sysfs_path, "pseudo_batt");
 	_optional_attr_path(b->health_path, sysfs_path, "health");
 

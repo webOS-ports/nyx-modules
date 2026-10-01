@@ -163,12 +163,29 @@ char test_FileGetString_health[64] = "";
 int32_t test_FileGetString_health_retval = -1;
 char test_FileGetString_status[64] = "";
 int32_t test_FileGetString_status_retval = -1;
+char test_FileGetString_level[64] = "";
+int32_t test_FileGetString_level_retval = -1;
 
 int FileGetString(const char *path, char *ret_string, size_t maxlen)
 {
 	if (ret_string && maxlen > 0)
 	{
 		ret_string[0] = '\0';
+	}
+
+	if (0 == g_strcmp0(path, "Battery/capacity_level"))
+	{
+		if (test_FileGetString_level_retval < 0)
+		{
+			return -1;
+		}
+
+		if (ret_string && maxlen > 0)
+		{
+			g_strlcpy(ret_string, test_FileGetString_level, maxlen);
+		}
+
+		return 0;
 	}
 
 	if (0 == g_strcmp0(path, "Battery/status"))
@@ -224,6 +241,7 @@ static char *test_batt_current_path = "Battery/current_now";
 static char *test_batt_current_avg_path = "Battery/current_avg";
 static char *test_batt_present_path = "Battery/present";
 static char *test_batt_status_path = "Battery/status";
+static char *test_batt_capacity_level_path = "Battery/capacity_level";
 static char *test_batt_fake_battery_path = "Battery/pseudo_batt";
 
 //
@@ -572,6 +590,7 @@ int32_t test_batt_current_path_exists = false;
 int32_t test_batt_current_avg_path_exists = false;
 int32_t test_batt_present_path_exists = false;
 int32_t test_batt_status_path_exists = false;
+int32_t test_batt_capacity_level_path_exists = false;
 int32_t test_batt_fake_battery_path_exists = false;
 
 //
@@ -638,6 +657,7 @@ gboolean g_file_test(const gchar *path, GFileTest test)
 											else ifMatchReturnExistsForTestPath(test_batt_current_avg_path)
 												else ifMatchReturnExistsForTestPath(test_batt_present_path)
 												else ifMatchReturnExistsForTestPath(test_batt_status_path)
+												else ifMatchReturnExistsForTestPath(test_batt_capacity_level_path)
 													else ifMatchReturnExistsForTestPath(test_batt_fake_battery_path)
 														else ifMatchReturnExistsForTestPath(test_batt_health_path)
 															else ifMatchReturnExistsForTestPath(test_kbd_charge_full_path)
@@ -656,6 +676,7 @@ gboolean g_file_test(const gchar *path, GFileTest test)
 											else ifMatchReturnExistsForTestPath(test_batt_current_avg_path)
 												else ifMatchReturnExistsForTestPath(test_batt_present_path)
 												else ifMatchReturnExistsForTestPath(test_batt_status_path)
+												else ifMatchReturnExistsForTestPath(test_batt_capacity_level_path)
 													else ifMatchReturnExistsForTestPath(test_batt_fake_battery_path)
 														else ifMatchReturnExistsForTestPath(test_batt_health_path)
 															else ifMatchReturnExistsForTestPath(test_bms_charge_full_path)
@@ -672,6 +693,7 @@ gboolean g_file_test(const gchar *path, GFileTest test)
 											else ifMatchReturnExistsForTestPath(test_batt_current_avg_path)
 												else ifMatchReturnExistsForTestPath(test_batt_present_path)
 												else ifMatchReturnExistsForTestPath(test_batt_status_path)
+												else ifMatchReturnExistsForTestPath(test_batt_capacity_level_path)
 													else ifMatchReturnExistsForTestPath(test_batt_fake_battery_path)
 														else ifMatchReturnExistsForTestPath(test_batt_health_path)
 															else ifMatchReturnExistsForTestPath(test_bms_charge_full_design_path)
@@ -1007,6 +1029,7 @@ void reset_battery_path_retvals(void)
 	test_batt_current_avg_path_exists = false;
 	test_batt_present_path_exists = false;
 	test_batt_status_path_exists = false;
+	test_batt_capacity_level_path_exists = false;
 	test_batt_fake_battery_path_exists = false;
 
 	test_batt_capacity_path_retval = -1;
@@ -1042,6 +1065,8 @@ void reset_battery_path_retvals(void)
 	test_FileGetString_health_retval = -1;
 	test_FileGetString_status[0] = '\0';
 	test_FileGetString_status_retval = -1;
+	test_FileGetString_level[0] = '\0';
+	test_FileGetString_level_retval = -1;
 	test_FileGetDouble_avg_retval = 0;
 	test_FileGetDouble_avg_result = -1;
 
@@ -1357,6 +1382,38 @@ test_battery_current(/*api_test_fixture *fixture, gconstpointer unused*/)
 	test_FileGetDouble_result = 0;
 	test_FileGetDouble_retval = -5000;
 	g_assert_true(-5 == battery_current(BATTERY_PRIMARY));
+
+	//
+	// capacity_level "Full" has the last word over a status that still says
+	// "Charging", so the reading keeps its sign here too - the MindPhone
+	// reports exactly this pair.
+	//
+	reset_battery_path_retvals();
+	test_batt_status_path_exists = true;
+	test_FileGetString_status_retval = 0;
+	g_strlcpy(test_FileGetString_status, "Charging",
+	          sizeof(test_FileGetString_status));
+	test_batt_capacity_level_path_exists = true;
+	test_FileGetString_level_retval = 0;
+	g_strlcpy(test_FileGetString_level, "Full",
+	          sizeof(test_FileGetString_level));
+	test_FileGetDouble_result = 0;
+	test_FileGetDouble_retval = -5000;
+	g_assert_true(-5 == battery_current(BATTERY_PRIMARY));
+
+	// any other capacity_level leaves status in charge of the direction
+	reset_battery_path_retvals();
+	test_batt_status_path_exists = true;
+	test_FileGetString_status_retval = 0;
+	g_strlcpy(test_FileGetString_status, "Charging",
+	          sizeof(test_FileGetString_status));
+	test_batt_capacity_level_path_exists = true;
+	test_FileGetString_level_retval = 0;
+	g_strlcpy(test_FileGetString_level, "Normal",
+	          sizeof(test_FileGetString_level));
+	test_FileGetDouble_result = 0;
+	test_FileGetDouble_retval = -410156;
+	g_assert_true(410 == battery_current(BATTERY_PRIMARY));
 
 	// A parse failure must not be reported as a reading. FileGetDouble()
 	// used to return success without storing anything, leaving the caller
