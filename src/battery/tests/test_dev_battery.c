@@ -1586,12 +1586,21 @@ test_battery_coulomb(/*api_test_fixture *fixture, gconstpointer unused*/)
 	test_batt_charge_counter_path_retval = 2634787;
 	g_assert_true((1840000 / 1000) == battery_coulomb(BATTERY_PRIMARY));
 
-	// A flat-zero charge_now with no counter to prefer is still reported as
-	// zero rather than turned into a failure.
+	// A flat zero with no counter to prefer is no answer, not a measurement:
+	// a present pack does not hold nothing, so the node is simply not wired
+	// up. A sargo whose gauge never loaded its profile reports 0 on every
+	// charge attribute it has while sitting at 61%, and "0 mAh" beside that
+	// percentage is a claim about the hardware that is not true.
 	reset_battery_path_retvals();
 	test_batt_charge_now_path_exists = true;
 	test_batt_charge_now_path_retval = 0;
-	g_assert_true(0 == battery_coulomb(BATTERY_PRIMARY));
+	g_assert_true(-1 == battery_coulomb(BATTERY_PRIMARY));
+
+	// ... and the same when the counter is the one reading zero
+	reset_battery_path_retvals();
+	test_batt_charge_counter_path_exists = true;
+	test_batt_charge_counter_path_retval = 0;
+	g_assert_true(-1 == battery_coulomb(BATTERY_PRIMARY));
 
 	forget_batteries();
 }

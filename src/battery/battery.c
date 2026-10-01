@@ -556,10 +556,18 @@ double battery_full40(int index)
 		return -1;
 	}
 
+	/*
+	 * Zero is not a capacity a present pack can have, so it is treated as the
+	 * node having nothing to say and the design figure is tried instead - and
+	 * if that is zero too, there is no answer to give. Same reasoning as
+	 * battery_coulomb(): a gauge that failed to load its profile reports 0
+	 * here, and reporting it back claims the pack holds nothing.
+	 */
 	if (!g_file_test(b->charge_full_path, G_FILE_TEST_EXISTS) ||
-	        ((charge_full = _read_optional_value(b->charge_full_path)) < 0))
+	        ((charge_full = _read_optional_value(b->charge_full_path)) <= 0))
 	{
-		if ((charge_full = _read_optional_value(b->charge_full_design_path)) < 0)
+		if ((charge_full =
+		         _read_optional_value(b->charge_full_design_path)) <= 0)
 		{
 			return -1;
 		}
@@ -728,10 +736,17 @@ double battery_rawcoulomb(int index)
  *
  * A charge_now of zero falls back for the same reason: a pack with no charge
  * left in it is a device that has switched off, so in practice a zero here
- * only ever means the node is not wired up. It is still returned if there is
- * no counter to prefer, rather than being turned into a failure.
+ * only ever means the node is not wired up.
  *
- * @retval Battery capacity (double)
+ * Which is why a zero still left after the fallback is reported as no answer
+ * rather than as a measurement. A sargo whose fuel gauge never loaded its
+ * battery profile exports charge_counter = 0 and charge_full = 0 on a pack
+ * sitting at 61%, and bms answers 0 for every one of them too, so there is
+ * nothing better to read - but "0 mAh" is a claim about the hardware that
+ * contradicts the percentage beside it, where -1 is the truth that this gauge
+ * cannot say. Callers already treat a negative as "do not show this".
+ *
+ * @retval Battery capacity in mAh, or -1 where no node can answer
  */
 
 double battery_coulomb(int index)
@@ -753,7 +768,7 @@ double battery_coulomb(int index)
 		}
 	}
 
-	if (charge_now < 0)
+	if (charge_now <= 0)
 	{
 		return -1;
 	}
