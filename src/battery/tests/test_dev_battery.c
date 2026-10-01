@@ -123,6 +123,18 @@ char *test_find_power_supply_sysfs_path_retval = TEST_BATT_NODE;
 // NULL means "this board has no BMS supply", which is the common case.
 char *test_find_power_supply_bms_retval = NULL;
 
+char *find_power_supply_sysfs_path_by_name(const char *name)
+{
+	// The gauge is looked up by node name now; the fixture calls its node "BMS".
+	if (name && 0 == g_strcmp0(name, "bms"))
+	{
+		return test_find_power_supply_bms_retval
+		       ? g_strdup(test_find_power_supply_bms_retval) : NULL;
+	}
+
+	return NULL;
+}
+
 char *find_power_supply_sysfs_path(const char *device_type)
 {
 	// Asked for by type, and the module asks for two different ones, so the
@@ -161,12 +173,46 @@ char **find_power_supply_sysfs_paths(const char *device_type)
 // path still reads as absent, as it did before there was anything to return.
 char test_FileGetString_health[64] = "";
 int32_t test_FileGetString_health_retval = -1;
+char test_FileGetString_status[64] = "";
+int32_t test_FileGetString_status_retval = -1;
+char test_FileGetString_level[64] = "";
+int32_t test_FileGetString_level_retval = -1;
 
 int FileGetString(const char *path, char *ret_string, size_t maxlen)
 {
 	if (ret_string && maxlen > 0)
 	{
 		ret_string[0] = '\0';
+	}
+
+	if (0 == g_strcmp0(path, "Battery/capacity_level"))
+	{
+		if (test_FileGetString_level_retval < 0)
+		{
+			return -1;
+		}
+
+		if (ret_string && maxlen > 0)
+		{
+			g_strlcpy(ret_string, test_FileGetString_level, maxlen);
+		}
+
+		return 0;
+	}
+
+	if (0 == g_strcmp0(path, "Battery/status"))
+	{
+		if (test_FileGetString_status_retval < 0)
+		{
+			return -1;
+		}
+
+		if (ret_string && maxlen > 0)
+		{
+			g_strlcpy(ret_string, test_FileGetString_status, maxlen);
+		}
+
+		return 0;
 	}
 
 	if (0 != g_strcmp0(path, "Battery/health") ||
@@ -204,7 +250,10 @@ static char *test_batt_charge_full_design_path = "Battery/charge_full_design";
 static char *test_batt_temperature_path = "Battery/temp";
 static char *test_batt_voltage_path = "Battery/voltage_now";
 static char *test_batt_current_path = "Battery/current_now";
+static char *test_batt_current_avg_path = "Battery/current_avg";
 static char *test_batt_present_path = "Battery/present";
+static char *test_batt_status_path = "Battery/status";
+static char *test_batt_capacity_level_path = "Battery/capacity_level";
 static char *test_batt_fake_battery_path = "Battery/pseudo_batt";
 
 //
@@ -217,6 +266,8 @@ double test_FileGetDouble_retval = 0;
 int test_FileGetDouble_result = -1;
 double test_FileGetDouble_temp_retval = 0;
 int test_FileGetDouble_temp_result = -1;
+double test_FileGetDouble_avg_retval = 0;
+int test_FileGetDouble_avg_result = -1;
 
 int FileGetDouble(const char *path, double *ret_data)
 {
@@ -229,6 +280,12 @@ int FileGetDouble(const char *path, double *ret_data)
 	{
 		result = test_FileGetDouble_temp_result;
 		value = test_FileGetDouble_temp_retval;
+	}
+
+	if (0 == strncmp(path, test_batt_current_avg_path, PATH_LEN))
+	{
+		result = test_FileGetDouble_avg_result;
+		value = test_FileGetDouble_avg_retval;
 	}
 
 	if (0 != result)
@@ -542,7 +599,10 @@ int32_t test_batt_charge_full_design_path_exists = false;
 int32_t test_batt_temperature_path_exists = false;
 int32_t test_batt_voltage_path_exists = false;
 int32_t test_batt_current_path_exists = false;
+int32_t test_batt_current_avg_path_exists = false;
 int32_t test_batt_present_path_exists = false;
+int32_t test_batt_status_path_exists = false;
+int32_t test_batt_capacity_level_path_exists = false;
 int32_t test_batt_fake_battery_path_exists = false;
 
 //
@@ -583,6 +643,18 @@ gboolean g_file_test(const gchar *path, GFileTest test)
 		return -1;
 	}
 
+	//
+	// An attribute the supply does not have leaves its path empty, and
+	// battery_full40() and battery_full_design() ask g_file_test() about
+	// charge_full directly rather than through _read_optional_value(). "Not
+	// there" is the truth for an empty path, and answering it here keeps the
+	// strictness below for paths that are actually spelled out.
+	//
+	if (!path || !path[0])
+	{
+		return false;
+	}
+
 	ifMatchReturnExistsForTestPath(test_batt_capacity_path)
 		else ifMatchReturnExistsForTestPath(test_batt_energy_now_path)
 			else ifMatchReturnExistsForTestPath(test_batt_energy_full_path)
@@ -594,7 +666,10 @@ gboolean g_file_test(const gchar *path, GFileTest test)
 									else ifMatchReturnExistsForTestPath(test_batt_temperature_path)
 										else ifMatchReturnExistsForTestPath(test_batt_voltage_path)
 											else ifMatchReturnExistsForTestPath(test_batt_current_path)
+											else ifMatchReturnExistsForTestPath(test_batt_current_avg_path)
 												else ifMatchReturnExistsForTestPath(test_batt_present_path)
+												else ifMatchReturnExistsForTestPath(test_batt_status_path)
+												else ifMatchReturnExistsForTestPath(test_batt_capacity_level_path)
 													else ifMatchReturnExistsForTestPath(test_batt_fake_battery_path)
 														else ifMatchReturnExistsForTestPath(test_batt_health_path)
 															else ifMatchReturnExistsForTestPath(test_kbd_charge_full_path)
@@ -610,7 +685,10 @@ gboolean g_file_test(const gchar *path, GFileTest test)
 									else ifMatchReturnExistsForTestPath(test_batt_temperature_path)
 										else ifMatchReturnExistsForTestPath(test_batt_voltage_path)
 											else ifMatchReturnExistsForTestPath(test_batt_current_path)
+											else ifMatchReturnExistsForTestPath(test_batt_current_avg_path)
 												else ifMatchReturnExistsForTestPath(test_batt_present_path)
+												else ifMatchReturnExistsForTestPath(test_batt_status_path)
+												else ifMatchReturnExistsForTestPath(test_batt_capacity_level_path)
 													else ifMatchReturnExistsForTestPath(test_batt_fake_battery_path)
 														else ifMatchReturnExistsForTestPath(test_batt_health_path)
 															else ifMatchReturnExistsForTestPath(test_bms_charge_full_path)
@@ -624,7 +702,10 @@ gboolean g_file_test(const gchar *path, GFileTest test)
 									else ifMatchReturnExistsForTestPath(test_batt_temperature_path)
 										else ifMatchReturnExistsForTestPath(test_batt_voltage_path)
 											else ifMatchReturnExistsForTestPath(test_batt_current_path)
+											else ifMatchReturnExistsForTestPath(test_batt_current_avg_path)
 												else ifMatchReturnExistsForTestPath(test_batt_present_path)
+												else ifMatchReturnExistsForTestPath(test_batt_status_path)
+												else ifMatchReturnExistsForTestPath(test_batt_capacity_level_path)
 													else ifMatchReturnExistsForTestPath(test_batt_fake_battery_path)
 														else ifMatchReturnExistsForTestPath(test_batt_health_path)
 															else ifMatchReturnExistsForTestPath(test_bms_charge_full_design_path)
@@ -957,7 +1038,10 @@ void reset_battery_path_retvals(void)
 	test_batt_temperature_path_exists = false;
 	test_batt_voltage_path_exists = false;
 	test_batt_current_path_exists = false;
+	test_batt_current_avg_path_exists = false;
 	test_batt_present_path_exists = false;
+	test_batt_status_path_exists = false;
+	test_batt_capacity_level_path_exists = false;
 	test_batt_fake_battery_path_exists = false;
 
 	test_batt_capacity_path_retval = -1;
@@ -991,6 +1075,12 @@ void reset_battery_path_retvals(void)
 	test_find_power_supply_bms_retval = NULL;
 	test_FileGetString_health[0] = '\0';
 	test_FileGetString_health_retval = -1;
+	test_FileGetString_status[0] = '\0';
+	test_FileGetString_status_retval = -1;
+	test_FileGetString_level[0] = '\0';
+	test_FileGetString_level_retval = -1;
+	test_FileGetDouble_avg_retval = 0;
+	test_FileGetDouble_avg_result = -1;
 
 	//
 	// Readings are taken per battery, so there has to be a battery in the
@@ -1246,6 +1336,97 @@ test_battery_current(/*api_test_fixture *fixture, gconstpointer unused*/)
 	test_FileGetDouble_retval = -600;
 	g_assert_true(0 == battery_current(BATTERY_PRIMARY));
 
+	//
+	// Which sign means charging is not fixed by the ABI, so the reading is
+	// normalised against status: positive is into the pack, whichever way the
+	// driver happened to report it. A Qualcomm gauge charging at 410 mA reads
+	// current_now negative with status "Charging".
+	//
+	reset_battery_path_retvals();
+	test_batt_status_path_exists = true;
+	test_FileGetString_status_retval = 0;
+	g_strlcpy(test_FileGetString_status, "Charging",
+	          sizeof(test_FileGetString_status));
+	test_FileGetDouble_result = 0;
+	test_FileGetDouble_retval = -410156;
+	g_assert_true(410 == battery_current(BATTERY_PRIMARY));
+
+	// A mainline gauge reports the same state as positive: unchanged.
+	reset_battery_path_retvals();
+	test_batt_status_path_exists = true;
+	test_FileGetString_status_retval = 0;
+	g_strlcpy(test_FileGetString_status, "Charging",
+	          sizeof(test_FileGetString_status));
+	test_FileGetDouble_result = 0;
+	test_FileGetDouble_retval = 410156;
+	g_assert_true(410 == battery_current(BATTERY_PRIMARY));
+
+	// "Discharging" is the mirror of the above: out of the pack is negative.
+	reset_battery_path_retvals();
+	test_batt_status_path_exists = true;
+	test_FileGetString_status_retval = 0;
+	g_strlcpy(test_FileGetString_status, "Discharging",
+	          sizeof(test_FileGetString_status));
+	test_FileGetDouble_result = 0;
+	test_FileGetDouble_retval = 352000;
+	g_assert_true(-352 == battery_current(BATTERY_PRIMARY));
+
+	//
+	// "Not charging" and "Full" say nothing about which way a current flows,
+	// so the reading is passed through rather than given an invented
+	// direction. Same for a driver that exports no status at all, which the
+	// cases above this block already cover.
+	//
+	reset_battery_path_retvals();
+	test_batt_status_path_exists = true;
+	test_FileGetString_status_retval = 0;
+	g_strlcpy(test_FileGetString_status, "Not charging",
+	          sizeof(test_FileGetString_status));
+	test_FileGetDouble_result = 0;
+	test_FileGetDouble_retval = 2929;
+	g_assert_true(2 == battery_current(BATTERY_PRIMARY));
+
+	reset_battery_path_retvals();
+	test_batt_status_path_exists = true;
+	test_FileGetString_status_retval = 0;
+	g_strlcpy(test_FileGetString_status, "Full",
+	          sizeof(test_FileGetString_status));
+	test_FileGetDouble_result = 0;
+	test_FileGetDouble_retval = -5000;
+	g_assert_true(-5 == battery_current(BATTERY_PRIMARY));
+
+	//
+	// capacity_level "Full" has the last word over a status that still says
+	// "Charging", so the reading keeps its sign here too - the MindPhone
+	// reports exactly this pair.
+	//
+	reset_battery_path_retvals();
+	test_batt_status_path_exists = true;
+	test_FileGetString_status_retval = 0;
+	g_strlcpy(test_FileGetString_status, "Charging",
+	          sizeof(test_FileGetString_status));
+	test_batt_capacity_level_path_exists = true;
+	test_FileGetString_level_retval = 0;
+	g_strlcpy(test_FileGetString_level, "Full",
+	          sizeof(test_FileGetString_level));
+	test_FileGetDouble_result = 0;
+	test_FileGetDouble_retval = -5000;
+	g_assert_true(-5 == battery_current(BATTERY_PRIMARY));
+
+	// any other capacity_level leaves status in charge of the direction
+	reset_battery_path_retvals();
+	test_batt_status_path_exists = true;
+	test_FileGetString_status_retval = 0;
+	g_strlcpy(test_FileGetString_status, "Charging",
+	          sizeof(test_FileGetString_status));
+	test_batt_capacity_level_path_exists = true;
+	test_FileGetString_level_retval = 0;
+	g_strlcpy(test_FileGetString_level, "Normal",
+	          sizeof(test_FileGetString_level));
+	test_FileGetDouble_result = 0;
+	test_FileGetDouble_retval = -410156;
+	g_assert_true(410 == battery_current(BATTERY_PRIMARY));
+
 	// A parse failure must not be reported as a reading. FileGetDouble()
 	// used to return success without storing anything, leaving the caller
 	// to return whatever was on the stack.
@@ -1276,6 +1457,35 @@ test_battery_avg_current(/*api_test_fixture *fixture, gconstpointer unused*/)
 	g_assert_true(371 == battery_avg_current(BATTERY_PRIMARY));
 	g_assert_true(battery_current(BATTERY_PRIMARY) == battery_avg_current(
 	                  BATTERY_PRIMARY));
+
+
+	//
+	// Where the driver does export current_avg, that is the node to read: the
+	// MindPhone's MT6739 gauge pins current_now to 0 and carries the real
+	// reading on current_avg only, so delegating to the instantaneous node
+	// reported no current at all. The mock answers by path, so a differing
+	// current_avg is what proves which one was read.
+	//
+	reset_battery_path_retvals();
+	test_batt_current_avg_path_exists = true;
+	test_FileGetDouble_result = 0;
+	test_FileGetDouble_retval = 0;
+	test_FileGetDouble_avg_result = 0;
+	test_FileGetDouble_avg_retval = 138000;
+	g_assert_true(138 == battery_avg_current(BATTERY_PRIMARY));
+	// and the instantaneous reading is still its own answer
+	g_assert_true(0 == battery_current(BATTERY_PRIMARY));
+
+	// current_avg is normalised against status just as current_now is
+	reset_battery_path_retvals();
+	test_batt_current_avg_path_exists = true;
+	test_batt_status_path_exists = true;
+	test_FileGetString_status_retval = 0;
+	g_strlcpy(test_FileGetString_status, "Charging",
+	          sizeof(test_FileGetString_status));
+	test_FileGetDouble_avg_result = 0;
+	test_FileGetDouble_avg_retval = -138000;
+	g_assert_true(138 == battery_avg_current(BATTERY_PRIMARY));
 
 	forget_batteries();
 }
@@ -1388,12 +1598,21 @@ test_battery_coulomb(/*api_test_fixture *fixture, gconstpointer unused*/)
 	test_batt_charge_counter_path_retval = 2634787;
 	g_assert_true((1840000 / 1000) == battery_coulomb(BATTERY_PRIMARY));
 
-	// A flat-zero charge_now with no counter to prefer is still reported as
-	// zero rather than turned into a failure.
+	// A flat zero with no counter to prefer is no answer, not a measurement:
+	// a present pack does not hold nothing, so the node is simply not wired
+	// up. A sargo whose gauge never loaded its profile reports 0 on every
+	// charge attribute it has while sitting at 61%, and "0 mAh" beside that
+	// percentage is a claim about the hardware that is not true.
 	reset_battery_path_retvals();
 	test_batt_charge_now_path_exists = true;
 	test_batt_charge_now_path_retval = 0;
-	g_assert_true(0 == battery_coulomb(BATTERY_PRIMARY));
+	g_assert_true(-1 == battery_coulomb(BATTERY_PRIMARY));
+
+	// ... and the same when the counter is the one reading zero
+	reset_battery_path_retvals();
+	test_batt_charge_counter_path_exists = true;
+	test_batt_charge_counter_path_retval = 0;
+	g_assert_true(-1 == battery_coulomb(BATTERY_PRIMARY));
 
 	forget_batteries();
 }

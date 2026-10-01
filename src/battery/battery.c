@@ -57,6 +57,9 @@
 
 #define PATH_LEN 256
 
+/* Longest power_supply status string is "Not charging". */
+#define STATUS_LEN 32
+
 /*
  * Two is what the hardware this was written for has - a phone and the battery
  * in its keyboard - and the cap only bounds how much of a misconfigured
@@ -94,7 +97,10 @@ typedef struct
 	char temperature_path[PATH_LEN];
 	char voltage_path[PATH_LEN];
 	char current_path[PATH_LEN];
+	char current_avg_path[PATH_LEN];
 	char present_path[PATH_LEN];
+	char status_path[PATH_LEN];
+	char capacity_level_path[PATH_LEN];
 	char fake_battery_path[PATH_LEN];
 
 	/* last values seen, so _handle_event only wakes callers on a change */
@@ -212,6 +218,52 @@ static int _read_optional_value(const char *path)
 	}
 
 	return nyx_utils_read_value(path);
+}
+
+/*
+ * The driver's own account of what the pack is doing, in the strings the
+ * power_supply class defines: "Charging", "Discharging", "Not charging",
+ * "Full" or "Unknown". false when the supply exports no status at all, which
+ * is the one case where callers have to guess instead.
+ */
+static bool _battery_status(int index, char *out, size_t len)
+{
+	battery_device_t *b = battery_at(index);
+	char level[STATUS_LEN];
+	bool have_status;
+
+	if (!b)
+	{
+		return false;
+	}
+
+	have_status = b->status_path[0]
+	              && FileGetString(b->status_path, out, len) >= 0;
+
+	/*
+	 * capacity_level has the last word when it says "Full", because a driver
+	 * that reports a full pack and a status of "Charging" at the same time is
+	 * contradicting itself and the capacity is the half to believe. The
+	 * MindPhone's MT6739 gauge does exactly that: it sits at capacity 100 with
+	 * capacity_level "Full" and never moves status off "Charging", so taking
+	 * status at its word reported a full battery as still charging for as long
+	 * as it stayed on the cable.
+	 *
+	 * Reported as "Full" rather than as "not charging" so the one override
+	 * answers both questions this is asked: the charging flag goes false, and
+	 * the current keeps its sign unexamined, which is already what "Full"
+	 * means to the normalisation below - a pack that is done charging is not
+	 * obviously moving charge in either direction.
+	 */
+	if (b->capacity_level_path[0]
+	        && FileGetString(b->capacity_level_path, level, sizeof(level)) >= 0
+	        && 0 == g_ascii_strcasecmp(level, "Full"))
+	{
+		g_strlcpy(out, "Full", len);
+		return true;
+	}
+
+	return have_status;
 }
 
 /**
@@ -359,28 +411,54 @@ int battery_voltage(int index)
  *
  * @retval Current (integer)
  */
-int battery_current(int index)
+/*
+ * Read one of the signed current attributes, in milliamps, with its sign
+ * normalised so that positive is into the pack.
+ *
+ * current_now is signed, and nyx_utils_read_value() collapses "value is
+ * negative" with "read failed", which reported -1 the whole time a device ran
+ * on battery. FileGetDouble() signals errors through its return code instead
+ * and stores the reading through the out-parameter, so a negative one
+ * survives the trip.
+ *
+ * Which sign means charging is not fixed by the power_supply ABI, and drivers
+ * split both ways: mainline gauges report charging as positive, Qualcomm's
+ * downstream charger and fuel-gauge drivers report it as negative. A sargo
+ * charging at 410 mA reads current_now = -410156.
+ *
+ * Publishing that raw just moves the question to every consumer, and they
+ * answer it inconsistently - batteryd's own poll loop and the settings app
+ * both take a negative current for discharging, so a charging sargo came out
+ * as "Current: -410 mA (discharging)" beside "Status: Charging".
+ *
+ * So normalise it here, once, to the convention the consumers already assume.
+ * status carries the direction and the attribute the magnitude. "Not
+ * charging", "Full" and "Unknown" say nothing about which way a current is
+ * flowing, so leave those alone rather than invent a direction for them - as
+ * with a driver that exports no status at all.
+ */
+static int _read_current_mA(int index, const char *path)
 {
-	battery_device_t *b = battery_at(index);
+	char status[STATUS_LEN];
 	double current = 0;
 
-	/*
-	 * The Linux power_supply class exports current_now as a *signed*
-	 * value in microamps: positive while the battery is charging,
-	 * negative while it is discharging. nyx_utils_read_value() collapses
-	 * "value is negative" with "read failed", which means battery_current
-	 * returns -1 on every Linux-mainline target the moment the device
-	 * runs on battery — masking the real value and confusing
-	 * batteryStatusQuery consumers in cardshell / powerd.
-	 *
-	 * Use FileGetDouble() instead, which signals errors via its return
-	 * code and stores the parsed value through the out-parameter, so
-	 * negative readings are passed through cleanly.
-	 */
-	if (!b || !b->current_path[0]
-	        || FileGetDouble(b->current_path, &current) < 0)
+	if (!path || !path[0] || FileGetDouble(path, &current) < 0)
 	{
 		return -1;
+	}
+
+	if (_battery_status(index, status, sizeof(status)))
+	{
+		double magnitude = (current < 0) ? -current : current;
+
+		if (0 == g_ascii_strcasecmp(status, "Charging"))
+		{
+			current = magnitude;
+		}
+		else if (0 == g_ascii_strcasecmp(status, "Discharging"))
+		{
+			current = -magnitude;
+		}
 	}
 
 	/* Microamps, for the same reason as the voltage above: batteryd
@@ -388,6 +466,13 @@ int battery_current(int index)
 	 * on both sides, which is what dropping sub-milliamp precision should
 	 * do. */
 	return (int)(current / 1000.0);
+}
+
+int battery_current(int index)
+{
+	battery_device_t *b = battery_at(index);
+
+	return b ? _read_current_mA(index, b->current_path) : -1;
 }
 
 /**
@@ -398,8 +483,62 @@ int battery_current(int index)
 
 int battery_avg_current(int index)
 {
-	// return battery_current for this device unless we have a way to separately read "average" current
+	battery_device_t *b = battery_at(index);
+
+	if (!b)
+	{
+		return -1;
+	}
+
+	/*
+	 * current_avg is the attribute the class defines for this, so where a
+	 * driver exports it that is the answer - and on some it is the only
+	 * reading that works. The MindPhone's MT6739 fuel gauge pins current_now
+	 * to 0 while current_avg carries the 138 mA actually flowing, so taking
+	 * the instantaneous node there reported no current at all.
+	 *
+	 * Fall back to current_now where there is no current_avg, which is what
+	 * every caller got before and what a gauge with only the one node can
+	 * answer.
+	 */
+	if (b->current_avg_path[0])
+	{
+		return _read_current_mA(index, b->current_avg_path);
+	}
+
 	return battery_current(index);
+}
+
+/**
+ * @brief Whether the pack is taking charge, from the driver's own verdict.
+ *
+ * The sign of current_now cannot answer this. The power_supply ABI does not
+ * fix which direction is positive and drivers split both ways: mainline
+ * gauges report charging as positive, while Qualcomm's downstream charger
+ * and fuel-gauge drivers report it as negative. A sargo charging at 410 mA
+ * reads current_now = -410156 with status = "Charging", so a caller testing
+ * the sign for "> 0" calls that discharging - and one testing for "< 0"
+ * would get the PinePhone wrong the same way.
+ *
+ * The status attribute is the driver saying it outright, in the same strings
+ * the charger module already matches on, so prefer it and leave the sign to
+ * the caller as a fallback for a driver that does not export it.
+ *
+ * "Full" is deliberately not charging: the pack is connected but no longer
+ * taking charge, and the charger module raises charge-complete separately.
+ *
+ * @retval 1 charging, 0 not charging, -1 no status attribute to ask.
+ */
+int battery_charging_state(int index)
+{
+	char status[STATUS_LEN];
+
+	if (!_battery_status(index, status, sizeof(status)))
+	{
+		return -1;
+	}
+
+	return (0 == g_ascii_strcasecmp(status, "Charging")) ? 1 : 0;
 }
 
 /**
@@ -417,10 +556,18 @@ double battery_full40(int index)
 		return -1;
 	}
 
+	/*
+	 * Zero is not a capacity a present pack can have, so it is treated as the
+	 * node having nothing to say and the design figure is tried instead - and
+	 * if that is zero too, there is no answer to give. Same reasoning as
+	 * battery_coulomb(): a gauge that failed to load its profile reports 0
+	 * here, and reporting it back claims the pack holds nothing.
+	 */
 	if (!g_file_test(b->charge_full_path, G_FILE_TEST_EXISTS) ||
-	        ((charge_full = _read_optional_value(b->charge_full_path)) < 0))
+	        ((charge_full = _read_optional_value(b->charge_full_path)) <= 0))
 	{
-		if ((charge_full = _read_optional_value(b->charge_full_design_path)) < 0)
+		if ((charge_full =
+		         _read_optional_value(b->charge_full_design_path)) <= 0)
 		{
 			return -1;
 		}
@@ -589,10 +736,17 @@ double battery_rawcoulomb(int index)
  *
  * A charge_now of zero falls back for the same reason: a pack with no charge
  * left in it is a device that has switched off, so in practice a zero here
- * only ever means the node is not wired up. It is still returned if there is
- * no counter to prefer, rather than being turned into a failure.
+ * only ever means the node is not wired up.
  *
- * @retval Battery capacity (double)
+ * Which is why a zero still left after the fallback is reported as no answer
+ * rather than as a measurement. A sargo whose fuel gauge never loaded its
+ * battery profile exports charge_counter = 0 and charge_full = 0 on a pack
+ * sitting at 61%, and bms answers 0 for every one of them too, so there is
+ * nothing better to read - but "0 mAh" is a claim about the hardware that
+ * contradicts the percentage beside it, where -1 is the truth that this gauge
+ * cannot say. Callers already treat a negative as "do not show this".
+ *
+ * @retval Battery capacity in mAh, or -1 where no node can answer
  */
 
 double battery_coulomb(int index)
@@ -614,7 +768,7 @@ double battery_coulomb(int index)
 		}
 	}
 
-	if (charge_now < 0)
+	if (charge_now <= 0)
 	{
 		return -1;
 	}
@@ -676,38 +830,38 @@ bool battery_is_present(int index)
 /**
  * @brief Point a path at the BMS's copy of an attribute if the battery has none.
  *
- * @param path a "<supply>/<attribute>" path, rewritten in place when the
- *             attribute is missing where it points and a power_supply of type
- *             "BMS" has one of the same name. Left alone otherwise, so the
- *             caller still ends up with the path it asked for and the usual
- *             "does not exist" handling applies.
+ * The attribute is named rather than recovered from the path, because an
+ * attribute the battery does not have leaves the path empty - that is what
+ * _optional_attr_path() does and the whole reason to come looking here - so
+ * there is no name left in it to read back.
+ *
+ * The gauge is found by node name, not by type: Qualcomm's kernels map
+ * POWER_SUPPLY_TYPE_BMS onto the sysfs string "Mains", so asking for a supply
+ * of type "BMS" never matches anything.
+ *
+ * @param path  rewritten in place when it is empty and a power_supply of type
+ *              "BMS" carries the attribute. Left alone when it already points
+ *              somewhere, so a battery that has the attribute keeps it.
+ * @param attribute the power_supply attribute name to look for under "BMS".
  */
-static void battery_prefer_bms_path(char *path)
+static void battery_prefer_bms_path(char *path, const char *attribute)
 {
-	const char *attribute;
 	char *bms_path;
 	char candidate[PATH_LEN];
 
-	if (!path || g_file_test(path, G_FILE_TEST_EXISTS))
+	if (!path || !attribute || path[0])
 	{
 		return;
 	}
 
-	attribute = strrchr(path, '/');
-
-	if (!attribute)
-	{
-		return;
-	}
-
-	bms_path = find_power_supply_sysfs_path("BMS");
+	bms_path = find_power_supply_sysfs_path_by_name("bms");
 
 	if (!bms_path)
 	{
 		return;
 	}
 
-	snprintf(candidate, PATH_LEN, "%s%s", bms_path, attribute);
+	snprintf(candidate, PATH_LEN, "%s/%s", bms_path, attribute);
 
 	if (g_file_test(candidate, G_FILE_TEST_EXISTS))
 	{
@@ -776,7 +930,11 @@ static void battery_set_paths(battery_device_t *b, const char *sysfs_path,
 	_optional_attr_path(b->temperature_path, sysfs_path, "temp");
 	_optional_attr_path(b->voltage_path, sysfs_path, "voltage_now");
 	_optional_attr_path(b->current_path, sysfs_path, "current_now");
+	_optional_attr_path(b->current_avg_path, sysfs_path, "current_avg");
 	_optional_attr_path(b->present_path, sysfs_path, "present");
+	_optional_attr_path(b->status_path, sysfs_path, "status");
+	_optional_attr_path(b->capacity_level_path, sysfs_path,
+	                    "capacity_level");
 	_optional_attr_path(b->fake_battery_path, sysfs_path, "pseudo_batt");
 	_optional_attr_path(b->health_path, sysfs_path, "health");
 
@@ -794,8 +952,9 @@ static void battery_set_paths(battery_device_t *b, const char *sysfs_path,
 	 * module picked and stay there, so nothing starts silently mixing two
 	 * sources for the same instant.
 	 */
-	battery_prefer_bms_path(b->charge_full_path);
-	battery_prefer_bms_path(b->charge_full_design_path);
+	battery_prefer_bms_path(b->charge_full_path, "charge_full");
+	battery_prefer_bms_path(b->charge_full_design_path,
+	                        "charge_full_design");
 }
 
 static bool battery_already_known(const char *sysfs_path)

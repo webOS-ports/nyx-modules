@@ -174,9 +174,25 @@ void battery_read_status_at(int index, nyx_battery_status_t *state)
 			state->health = battery_health(index);
 			state->age = battery_age(index);
 
-			if (state->avg_current >  0)
+			/*
+			 * Ask the driver first; fall back to the sign of the current
+			 * only where it exports no status to ask. See
+			 * battery_charging_state() for why the sign alone cannot answer
+			 * this.
+			 */
+			switch (battery_charging_state(index))
 			{
-				state->charging = true;
+				case 1:
+					state->charging = true;
+					break;
+
+				case 0:
+					state->charging = false;
+					break;
+
+				default:
+					state->charging = (state->avg_current > 0);
+					break;
 			}
 		}
 		else
