@@ -221,6 +221,7 @@ static char *test_batt_charge_full_design_path = "Battery/charge_full_design";
 static char *test_batt_temperature_path = "Battery/temp";
 static char *test_batt_voltage_path = "Battery/voltage_now";
 static char *test_batt_current_path = "Battery/current_now";
+static char *test_batt_current_avg_path = "Battery/current_avg";
 static char *test_batt_present_path = "Battery/present";
 static char *test_batt_status_path = "Battery/status";
 static char *test_batt_fake_battery_path = "Battery/pseudo_batt";
@@ -235,6 +236,8 @@ double test_FileGetDouble_retval = 0;
 int test_FileGetDouble_result = -1;
 double test_FileGetDouble_temp_retval = 0;
 int test_FileGetDouble_temp_result = -1;
+double test_FileGetDouble_avg_retval = 0;
+int test_FileGetDouble_avg_result = -1;
 
 int FileGetDouble(const char *path, double *ret_data)
 {
@@ -247,6 +250,12 @@ int FileGetDouble(const char *path, double *ret_data)
 	{
 		result = test_FileGetDouble_temp_result;
 		value = test_FileGetDouble_temp_retval;
+	}
+
+	if (0 == strncmp(path, test_batt_current_avg_path, PATH_LEN))
+	{
+		result = test_FileGetDouble_avg_result;
+		value = test_FileGetDouble_avg_retval;
 	}
 
 	if (0 != result)
@@ -560,6 +569,7 @@ int32_t test_batt_charge_full_design_path_exists = false;
 int32_t test_batt_temperature_path_exists = false;
 int32_t test_batt_voltage_path_exists = false;
 int32_t test_batt_current_path_exists = false;
+int32_t test_batt_current_avg_path_exists = false;
 int32_t test_batt_present_path_exists = false;
 int32_t test_batt_status_path_exists = false;
 int32_t test_batt_fake_battery_path_exists = false;
@@ -625,6 +635,7 @@ gboolean g_file_test(const gchar *path, GFileTest test)
 									else ifMatchReturnExistsForTestPath(test_batt_temperature_path)
 										else ifMatchReturnExistsForTestPath(test_batt_voltage_path)
 											else ifMatchReturnExistsForTestPath(test_batt_current_path)
+											else ifMatchReturnExistsForTestPath(test_batt_current_avg_path)
 												else ifMatchReturnExistsForTestPath(test_batt_present_path)
 												else ifMatchReturnExistsForTestPath(test_batt_status_path)
 													else ifMatchReturnExistsForTestPath(test_batt_fake_battery_path)
@@ -642,6 +653,7 @@ gboolean g_file_test(const gchar *path, GFileTest test)
 									else ifMatchReturnExistsForTestPath(test_batt_temperature_path)
 										else ifMatchReturnExistsForTestPath(test_batt_voltage_path)
 											else ifMatchReturnExistsForTestPath(test_batt_current_path)
+											else ifMatchReturnExistsForTestPath(test_batt_current_avg_path)
 												else ifMatchReturnExistsForTestPath(test_batt_present_path)
 												else ifMatchReturnExistsForTestPath(test_batt_status_path)
 													else ifMatchReturnExistsForTestPath(test_batt_fake_battery_path)
@@ -657,6 +669,7 @@ gboolean g_file_test(const gchar *path, GFileTest test)
 									else ifMatchReturnExistsForTestPath(test_batt_temperature_path)
 										else ifMatchReturnExistsForTestPath(test_batt_voltage_path)
 											else ifMatchReturnExistsForTestPath(test_batt_current_path)
+											else ifMatchReturnExistsForTestPath(test_batt_current_avg_path)
 												else ifMatchReturnExistsForTestPath(test_batt_present_path)
 												else ifMatchReturnExistsForTestPath(test_batt_status_path)
 													else ifMatchReturnExistsForTestPath(test_batt_fake_battery_path)
@@ -991,6 +1004,7 @@ void reset_battery_path_retvals(void)
 	test_batt_temperature_path_exists = false;
 	test_batt_voltage_path_exists = false;
 	test_batt_current_path_exists = false;
+	test_batt_current_avg_path_exists = false;
 	test_batt_present_path_exists = false;
 	test_batt_status_path_exists = false;
 	test_batt_fake_battery_path_exists = false;
@@ -1028,6 +1042,8 @@ void reset_battery_path_retvals(void)
 	test_FileGetString_health_retval = -1;
 	test_FileGetString_status[0] = '\0';
 	test_FileGetString_status_retval = -1;
+	test_FileGetDouble_avg_retval = 0;
+	test_FileGetDouble_avg_result = -1;
 
 	//
 	// Readings are taken per battery, so there has to be a battery in the
@@ -1372,6 +1388,35 @@ test_battery_avg_current(/*api_test_fixture *fixture, gconstpointer unused*/)
 	g_assert_true(371 == battery_avg_current(BATTERY_PRIMARY));
 	g_assert_true(battery_current(BATTERY_PRIMARY) == battery_avg_current(
 	                  BATTERY_PRIMARY));
+
+
+	//
+	// Where the driver does export current_avg, that is the node to read: the
+	// MindPhone's MT6739 gauge pins current_now to 0 and carries the real
+	// reading on current_avg only, so delegating to the instantaneous node
+	// reported no current at all. The mock answers by path, so a differing
+	// current_avg is what proves which one was read.
+	//
+	reset_battery_path_retvals();
+	test_batt_current_avg_path_exists = true;
+	test_FileGetDouble_result = 0;
+	test_FileGetDouble_retval = 0;
+	test_FileGetDouble_avg_result = 0;
+	test_FileGetDouble_avg_retval = 138000;
+	g_assert_true(138 == battery_avg_current(BATTERY_PRIMARY));
+	// and the instantaneous reading is still its own answer
+	g_assert_true(0 == battery_current(BATTERY_PRIMARY));
+
+	// current_avg is normalised against status just as current_now is
+	reset_battery_path_retvals();
+	test_batt_current_avg_path_exists = true;
+	test_batt_status_path_exists = true;
+	test_FileGetString_status_retval = 0;
+	g_strlcpy(test_FileGetString_status, "Charging",
+	          sizeof(test_FileGetString_status));
+	test_FileGetDouble_avg_result = 0;
+	test_FileGetDouble_avg_retval = -138000;
+	g_assert_true(138 == battery_avg_current(BATTERY_PRIMARY));
 
 	forget_batteries();
 }

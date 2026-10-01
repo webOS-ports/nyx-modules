@@ -97,6 +97,7 @@ typedef struct
 	char temperature_path[PATH_LEN];
 	char voltage_path[PATH_LEN];
 	char current_path[PATH_LEN];
+	char current_avg_path[PATH_LEN];
 	char present_path[PATH_LEN];
 	char status_path[PATH_LEN];
 	char fake_battery_path[PATH_LEN];
@@ -382,43 +383,42 @@ int battery_voltage(int index)
  *
  * @retval Current (integer)
  */
-int battery_current(int index)
+/*
+ * Read one of the signed current attributes, in milliamps, with its sign
+ * normalised so that positive is into the pack.
+ *
+ * current_now is signed, and nyx_utils_read_value() collapses "value is
+ * negative" with "read failed", which reported -1 the whole time a device ran
+ * on battery. FileGetDouble() signals errors through its return code instead
+ * and stores the reading through the out-parameter, so a negative one
+ * survives the trip.
+ *
+ * Which sign means charging is not fixed by the power_supply ABI, and drivers
+ * split both ways: mainline gauges report charging as positive, Qualcomm's
+ * downstream charger and fuel-gauge drivers report it as negative. A sargo
+ * charging at 410 mA reads current_now = -410156.
+ *
+ * Publishing that raw just moves the question to every consumer, and they
+ * answer it inconsistently - batteryd's own poll loop and the settings app
+ * both take a negative current for discharging, so a charging sargo came out
+ * as "Current: -410 mA (discharging)" beside "Status: Charging".
+ *
+ * So normalise it here, once, to the convention the consumers already assume.
+ * status carries the direction and the attribute the magnitude. "Not
+ * charging", "Full" and "Unknown" say nothing about which way a current is
+ * flowing, so leave those alone rather than invent a direction for them - as
+ * with a driver that exports no status at all.
+ */
+static int _read_current_mA(int index, const char *path)
 {
-	battery_device_t *b = battery_at(index);
 	char status[STATUS_LEN];
 	double current = 0;
 
-	/*
-	 * current_now is signed, and nyx_utils_read_value() collapses "value is
-	 * negative" with "read failed", which reported -1 the whole time a device
-	 * ran on battery. FileGetDouble() signals errors through its return code
-	 * instead and stores the reading through the out-parameter, so a negative
-	 * one survives the trip.
-	 */
-	if (!b || !b->current_path[0]
-	        || FileGetDouble(b->current_path, &current) < 0)
+	if (!path || !path[0] || FileGetDouble(path, &current) < 0)
 	{
 		return -1;
 	}
 
-	/*
-	 * Which sign means charging is not fixed by the power_supply ABI, and
-	 * drivers split both ways: mainline gauges report charging as positive,
-	 * Qualcomm's downstream charger and fuel-gauge drivers report it as
-	 * negative. A sargo charging at 410 mA reads current_now = -410156.
-	 *
-	 * Publishing that raw just moves the question to every consumer, and they
-	 * answer it inconsistently - batteryd's own poll loop and the settings
-	 * app both take a negative current for discharging, so a charging sargo
-	 * came out as "Current: -410 mA (discharging)" beside "Status: Charging".
-	 *
-	 * So normalise it here, once, to the convention the consumers already
-	 * assume: positive is into the pack. status carries the direction and
-	 * current_now the magnitude. "Not charging", "Full" and "Unknown" say
-	 * nothing about which way a current is flowing, so leave those alone
-	 * rather than invent a direction for them - as with a driver that exports
-	 * no status at all.
-	 */
 	if (_battery_status(index, status, sizeof(status)))
 	{
 		double magnitude = (current < 0) ? -current : current;
@@ -440,6 +440,13 @@ int battery_current(int index)
 	return (int)(current / 1000.0);
 }
 
+int battery_current(int index)
+{
+	battery_device_t *b = battery_at(index);
+
+	return b ? _read_current_mA(index, b->current_path) : -1;
+}
+
 /**
  * @brief Read average current being drawn by the battery.
  *
@@ -448,7 +455,29 @@ int battery_current(int index)
 
 int battery_avg_current(int index)
 {
-	// return battery_current for this device unless we have a way to separately read "average" current
+	battery_device_t *b = battery_at(index);
+
+	if (!b)
+	{
+		return -1;
+	}
+
+	/*
+	 * current_avg is the attribute the class defines for this, so where a
+	 * driver exports it that is the answer - and on some it is the only
+	 * reading that works. The MindPhone's MT6739 fuel gauge pins current_now
+	 * to 0 while current_avg carries the 138 mA actually flowing, so taking
+	 * the instantaneous node there reported no current at all.
+	 *
+	 * Fall back to current_now where there is no current_avg, which is what
+	 * every caller got before and what a gauge with only the one node can
+	 * answer.
+	 */
+	if (b->current_avg_path[0])
+	{
+		return _read_current_mA(index, b->current_avg_path);
+	}
+
 	return battery_current(index);
 }
 
@@ -858,6 +887,7 @@ static void battery_set_paths(battery_device_t *b, const char *sysfs_path,
 	_optional_attr_path(b->temperature_path, sysfs_path, "temp");
 	_optional_attr_path(b->voltage_path, sysfs_path, "voltage_now");
 	_optional_attr_path(b->current_path, sysfs_path, "current_now");
+	_optional_attr_path(b->current_avg_path, sysfs_path, "current_avg");
 	_optional_attr_path(b->present_path, sysfs_path, "present");
 	_optional_attr_path(b->status_path, sysfs_path, "status");
 	_optional_attr_path(b->fake_battery_path, sysfs_path, "pseudo_batt");
