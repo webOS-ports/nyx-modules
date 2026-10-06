@@ -734,12 +734,15 @@ gboolean g_file_test(const gchar *path, GFileTest test)
 												//
 												// The keyboard's battery is probed for every attribute
 												// the module resolves, and only the two capacities are
-												// mocked for it. What no test gave it does not exist -
-												// but only for the attributes the module is known to
-												// probe, so a path it should not be asking about is
-												// still caught below.
+												// mocked for it. So is the node the module falls back to
+												// when nothing is configured and nothing is found, which
+												// no test mocks anything for. What no test gave them does
+												// not exist - but only for the attributes the module is
+												// known to probe, so a path it should not be asking
+												// about is still caught below.
 												//
-												if (g_str_has_prefix(path, TEST_KBD_NODE "/"))
+												if (g_str_has_prefix(path, TEST_KBD_NODE "/") ||
+												        g_str_has_prefix(path, "/sys/class/power_supply/battery/"))
 												{
 													static const char *probed[] =
 													{
@@ -1141,6 +1144,38 @@ void forget_batteries(void)
 }
 
 //
+// The module resolves a battery's attribute paths when the battery is
+// detected, and an attribute the supply does not export gets no path at all, so
+// that nothing reads it and nothing logs its absence. Every case below states
+// what the supply exports by setting the "exists" mocks and then calls the API,
+// which is a supply that was detected after those mocks were set - what the
+// hardware looks like at probe time. reset_battery_path_retvals() detects
+// before any case has said anything, so without this each case would be
+// reading from a list built for a supply that exports nothing.
+//
+// So the accessors that read an attribute detect again first, under the mocks
+// as they stand. (battery_xxx) in parentheses is the function itself, not the
+// macro.
+//
+static void test_redetect(void)
+{
+	battery_forget_all();
+	detect_battery_sysfs_paths();
+}
+
+#define battery_percent(i)        (test_redetect(), (battery_percent)(i))
+#define battery_temperature(i)    (test_redetect(), (battery_temperature)(i))
+#define battery_voltage(i)        (test_redetect(), (battery_voltage)(i))
+#define battery_current(i)        (test_redetect(), (battery_current)(i))
+#define battery_avg_current(i)    (test_redetect(), (battery_avg_current)(i))
+#define battery_charging_state(i) (test_redetect(), (battery_charging_state)(i))
+#define battery_full40(i)         (test_redetect(), (battery_full40)(i))
+#define battery_full_design(i)    (test_redetect(), (battery_full_design)(i))
+#define battery_health(i)         (test_redetect(), (battery_health)(i))
+#define battery_coulomb(i)        (test_redetect(), (battery_coulomb)(i))
+#define battery_is_present(i)     (test_redetect(), (battery_is_present)(i))
+
+//
 // Tests for the battery_percent API method
 // int battery_percent(int index)
 //
@@ -1232,6 +1267,7 @@ test_battery_temperature(/*api_test_fixture *fixture, gconstpointer unused*/)
 
 	// Check for failure returned from test_batt_temperature_path
 	reset_battery_path_retvals();
+	test_batt_temperature_path_exists = true;
 	test_FileGetDouble_temp_result = -1;
 	g_assert_true(-1 == battery_temperature(BATTERY_PRIMARY));
 
@@ -1241,23 +1277,27 @@ test_battery_temperature(/*api_test_fixture *fixture, gconstpointer unused*/)
 	// CTIA limits in battery.c have always meant by it.
 	//
 	reset_battery_path_retvals();
+	test_batt_temperature_path_exists = true;
 	test_FileGetDouble_temp_result = 0;
 	test_FileGetDouble_temp_retval = 333;
 	g_assert_true(33 == battery_temperature(BATTERY_PRIMARY));
 
 	// Rounded, not truncated
 	reset_battery_path_retvals();
+	test_batt_temperature_path_exists = true;
 	test_FileGetDouble_temp_result = 0;
 	test_FileGetDouble_temp_retval = 296;
 	g_assert_true(30 == battery_temperature(BATTERY_PRIMARY));
 
 	// A battery at the CTIA shutdown limit, and one just under it
 	reset_battery_path_retvals();
+	test_batt_temperature_path_exists = true;
 	test_FileGetDouble_temp_result = 0;
 	test_FileGetDouble_temp_retval = 600;
 	g_assert_true(60 == battery_temperature(BATTERY_PRIMARY));
 
 	reset_battery_path_retvals();
+	test_batt_temperature_path_exists = true;
 	test_FileGetDouble_temp_result = 0;
 	test_FileGetDouble_temp_retval = 594;
 	g_assert_true(59 == battery_temperature(BATTERY_PRIMARY));
@@ -1269,23 +1309,27 @@ test_battery_temperature(/*api_test_fixture *fixture, gconstpointer unused*/)
 	// the CTIA minimum charge temperature exists to catch.
 	//
 	reset_battery_path_retvals();
+	test_batt_temperature_path_exists = true;
 	test_FileGetDouble_temp_result = 0;
 	test_FileGetDouble_temp_retval = -50;
 	g_assert_true(-5 == battery_temperature(BATTERY_PRIMARY));
 
 	reset_battery_path_retvals();
+	test_batt_temperature_path_exists = true;
 	test_FileGetDouble_temp_result = 0;
 	test_FileGetDouble_temp_retval = -200;
 	g_assert_true(-20 == battery_temperature(BATTERY_PRIMARY));
 
 	// Rounding must not make a freezing battery look warmer than it is
 	reset_battery_path_retvals();
+	test_batt_temperature_path_exists = true;
 	test_FileGetDouble_temp_result = 0;
 	test_FileGetDouble_temp_retval = -55;
 	g_assert_true(-6 == battery_temperature(BATTERY_PRIMARY));
 
 	// Zero is a real reading, not an absent one
 	reset_battery_path_retvals();
+	test_batt_temperature_path_exists = true;
 	test_FileGetDouble_temp_result = 0;
 	test_FileGetDouble_temp_retval = 0;
 	g_assert_true(0 == battery_temperature(BATTERY_PRIMARY));
@@ -1344,11 +1388,13 @@ test_battery_current(/*api_test_fixture *fixture, gconstpointer unused*/)
 
 	// Check for failure returned when the node cannot be read
 	reset_battery_path_retvals();
+	test_batt_current_path_exists = true;
 	test_FileGetDouble_result = -1;
 	g_assert_true(-1 == battery_current(BATTERY_PRIMARY));
 
 	// Check for correct return value while charging
 	reset_battery_path_retvals();
+	test_batt_current_path_exists = true;
 	test_FileGetDouble_result = 0;
 	test_FileGetDouble_retval = 371870;
 	//
@@ -1364,6 +1410,7 @@ test_battery_current(/*api_test_fixture *fixture, gconstpointer unused*/)
 	// -1 the whole time the device was on battery.
 	//
 	reset_battery_path_retvals();
+	test_batt_current_path_exists = true;
 	test_FileGetDouble_result = 0;
 	test_FileGetDouble_retval = -1543000;
 	g_assert_true(-1543 == battery_current(BATTERY_PRIMARY));
@@ -1371,6 +1418,7 @@ test_battery_current(/*api_test_fixture *fixture, gconstpointer unused*/)
 	// Truncation toward zero on both sides: a current under a milliamp is
 	// reported as none rather than rounding away from zero.
 	reset_battery_path_retvals();
+	test_batt_current_path_exists = true;
 	test_FileGetDouble_result = 0;
 	test_FileGetDouble_retval = -600;
 	g_assert_true(0 == battery_current(BATTERY_PRIMARY));
@@ -1382,6 +1430,7 @@ test_battery_current(/*api_test_fixture *fixture, gconstpointer unused*/)
 	// current_now negative with status "Charging".
 	//
 	reset_battery_path_retvals();
+	test_batt_current_path_exists = true;
 	test_batt_status_path_exists = true;
 	test_FileGetString_status_retval = 0;
 	g_strlcpy(test_FileGetString_status, "Charging",
@@ -1392,6 +1441,7 @@ test_battery_current(/*api_test_fixture *fixture, gconstpointer unused*/)
 
 	// A mainline gauge reports the same state as positive: unchanged.
 	reset_battery_path_retvals();
+	test_batt_current_path_exists = true;
 	test_batt_status_path_exists = true;
 	test_FileGetString_status_retval = 0;
 	g_strlcpy(test_FileGetString_status, "Charging",
@@ -1402,6 +1452,7 @@ test_battery_current(/*api_test_fixture *fixture, gconstpointer unused*/)
 
 	// "Discharging" is the mirror of the above: out of the pack is negative.
 	reset_battery_path_retvals();
+	test_batt_current_path_exists = true;
 	test_batt_status_path_exists = true;
 	test_FileGetString_status_retval = 0;
 	g_strlcpy(test_FileGetString_status, "Discharging",
@@ -1417,6 +1468,7 @@ test_battery_current(/*api_test_fixture *fixture, gconstpointer unused*/)
 	// cases above this block already cover.
 	//
 	reset_battery_path_retvals();
+	test_batt_current_path_exists = true;
 	test_batt_status_path_exists = true;
 	test_FileGetString_status_retval = 0;
 	g_strlcpy(test_FileGetString_status, "Not charging",
@@ -1426,6 +1478,7 @@ test_battery_current(/*api_test_fixture *fixture, gconstpointer unused*/)
 	g_assert_true(2 == battery_current(BATTERY_PRIMARY));
 
 	reset_battery_path_retvals();
+	test_batt_current_path_exists = true;
 	test_batt_status_path_exists = true;
 	test_FileGetString_status_retval = 0;
 	g_strlcpy(test_FileGetString_status, "Full",
@@ -1440,6 +1493,7 @@ test_battery_current(/*api_test_fixture *fixture, gconstpointer unused*/)
 	// reports exactly this pair.
 	//
 	reset_battery_path_retvals();
+	test_batt_current_path_exists = true;
 	test_batt_status_path_exists = true;
 	test_FileGetString_status_retval = 0;
 	g_strlcpy(test_FileGetString_status, "Charging",
@@ -1454,6 +1508,7 @@ test_battery_current(/*api_test_fixture *fixture, gconstpointer unused*/)
 
 	// any other capacity_level leaves status in charge of the direction
 	reset_battery_path_retvals();
+	test_batt_current_path_exists = true;
 	test_batt_status_path_exists = true;
 	test_FileGetString_status_retval = 0;
 	g_strlcpy(test_FileGetString_status, "Charging",
@@ -1470,6 +1525,7 @@ test_battery_current(/*api_test_fixture *fixture, gconstpointer unused*/)
 	// used to return success without storing anything, leaving the caller
 	// to return whatever was on the stack.
 	reset_battery_path_retvals();
+	test_batt_current_path_exists = true;
 	test_FileGetDouble_result = -1;
 	test_FileGetDouble_retval = 12345;
 	g_assert_true(-1 == battery_current(BATTERY_PRIMARY));
@@ -1486,10 +1542,12 @@ test_battery_avg_current(/*api_test_fixture *fixture, gconstpointer unused*/)
 {
 	// There is no separate "average" node, so this tracks battery_current()
 	reset_battery_path_retvals();
+	test_batt_current_path_exists = true;
 	test_FileGetDouble_result = -1;
 	g_assert_true(-1 == battery_avg_current(BATTERY_PRIMARY));
 
 	reset_battery_path_retvals();
+	test_batt_current_path_exists = true;
 	test_FileGetDouble_result = 0;
 	test_FileGetDouble_retval = 371870;
 	// Milliamps, like battery_current() it delegates to
@@ -1506,6 +1564,7 @@ test_battery_avg_current(/*api_test_fixture *fixture, gconstpointer unused*/)
 	// current_avg is what proves which one was read.
 	//
 	reset_battery_path_retvals();
+	test_batt_current_path_exists = true;
 	test_batt_current_avg_path_exists = true;
 	test_FileGetDouble_result = 0;
 	test_FileGetDouble_retval = 0;
