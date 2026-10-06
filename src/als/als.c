@@ -406,7 +406,8 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t** device)
 			als_device->enable_path = samsung_enable;
 			als_device->iio_scale = configured != NULL ? g_ascii_strtod(configured, NULL) : 0.0;
 
-			if (als_device->iio_scale <= 0.0)
+			/* Not "<= 0.0": a NaN compares false and would reach the (int32_t) cast of the lux value. */
+			if (!isfinite(als_device->iio_scale) || !(als_device->iio_scale > 0.0))
 				als_device->iio_scale = SAMSUNG_LUX_PER_COUNT;
 
 			g_free(configured);
