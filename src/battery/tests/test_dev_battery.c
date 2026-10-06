@@ -65,7 +65,7 @@
 // NOTE: define this nyx_error to send TARGET nyx_error messages (from the tested source) to stderr:
 //#define nyx_error(m, ...) {fprintf(stderr,"\n\t"); fprintf(stderr, m, ##__VA_ARGS__);}
 
-// mock out externals defined in chargerlib.c
+// mock out externals defined in batterylib.c
 
 nyx_device_t *nyxDev = NULL;
 
@@ -458,7 +458,7 @@ struct udev_monitor
 // Mock the udev calls
 
 // udev_monitor_receive_device() is called by _handle_power_supply_event()
-// which is a callback passed to g_io_add_watch() in _charger_init()...
+// which is a callback passed to g_io_add_watch() in battery_init()...
 struct udev_device testUdevDevice;
 struct udev_device *testUdevDevice_retval = &testUdevDevice;
 struct udev_device *udev_monitor_receive_device(struct udev_monitor
@@ -814,7 +814,7 @@ guint     g_io_add_watch(GIOChannel      *channel,
 
 	nyx_debug("In g_io_add_watch: testGIOChannelRefcount = %d",
 	          testGIOChannelRefcount);
-	// return value is "the event source id" which is not used by charger.c
+	// return value is "the event source id" which is not used by battery.c
 	return testEventSourceId_retVal;
 }
 
@@ -858,26 +858,9 @@ gboolean g_source_remove(guint tag)
 //*****************************************************************************
 //*****************************************************************************
 
-#if 0
-static int32_t init_charger_max_current = -1;
-static int32_t init_connected = -1;
-static int32_t init_powered = -1;
-static bool init_is_charging = false;
-static char *init_serial_number = "serialNumber";
-static void resetTestChargerStatus(nyx_charger_status_t *chargerStatus)
-{
-	chargerStatus->charger_max_current = init_charger_max_current;
-	chargerStatus->connected = init_connected;
-	chargerStatus->powered = init_powered;
-	chargerStatus->is_charging = init_is_charging;
-	strncpy(chargerStatus->dock_serial_number, init_serial_number,
-	        NYX_DOCK_SERIAL_NUMBER_LEN);
-}
-#endif
-
 //
-// Tests for the _charger_init API method
-// nyx_error_t _charger_init(void)
+// Tests for the battery_init API method
+// nyx_error_t battery_init(void)
 //
 static void
 test_battery_init(/*api_test_fixture *fixture, gconstpointer unused*/)
@@ -998,71 +981,6 @@ test_battery_init(/*api_test_fixture *fixture, gconstpointer unused*/)
 	g_assert_true(0 == testUdevMonitorRefcount);
 	nyx_debug("\n");
 }
-
-#if 0
-//
-// Tests for the _charger_read_status API method
-// nyx_error_t _charger_read_status(nyx_charger_status_t *status)
-//
-static void
-test__charger_read_status(/*api_test_fixture *fixture, gconstpointer unused*/)
-{
-	nyx_charger_status_t testChargerStatus;
-	resetTestChargerStatus(&testChargerStatus);
-
-	// Check for no error
-	g_assert_true(NYX_ERROR_NONE == _charger_read_status(&testChargerStatus));
-
-	// For now, check to make sure values returned are different from our initialized test values
-	g_assert_true(testChargerStatus.charger_max_current !=
-	              init_charger_max_current);
-	g_assert_true(testChargerStatus.connected != init_connected);
-	g_assert_true(testChargerStatus.powered != init_powered);
-	// can't check to see if is_charging changed since it's a "bool"
-	//g_assert_true(testChargerStatus.is_charging != init_is_charging);
-	g_assert_true(0 != strncmp(testChargerStatus.dock_serial_number,
-	                           init_serial_number, NYX_DOCK_SERIAL_NUMBER_LEN));
-
-	// Check to see if is_charging returns true when we claim to be connected to USB
-	test_battery_sysfs_path_retval = 0;
-	test_charger_usb_sysfs_path_retval = 1;
-	test_charger_ac_sysfs_path_retval = 0;
-	test_charger_touch_sysfs_path_retval = 0;
-	test_charger_wireless_sysfs_path_retval = 0;
-	resetTestChargerStatus(&testChargerStatus);
-	// force is_charging status to false; make sure it returns true
-	testChargerStatus.is_charging = false;
-	g_assert_true(NYX_ERROR_NONE == _charger_read_status(&testChargerStatus));
-	g_assert_true(true == testChargerStatus.is_charging);
-
-	// Check to see if is_charging returns true when we claim to be connected to AC
-	test_battery_sysfs_path_retval = 0;
-	test_charger_usb_sysfs_path_retval = 0;
-	test_charger_ac_sysfs_path_retval = 1;
-	test_charger_touch_sysfs_path_retval = 0;
-	test_charger_wireless_sysfs_path_retval = 0;
-	resetTestChargerStatus(&testChargerStatus);
-	// force is_charging status to false; make sure it returns true
-	testChargerStatus.is_charging = false;
-	g_assert_true(NYX_ERROR_NONE == _charger_read_status(&testChargerStatus));
-	g_assert_true(true == testChargerStatus.is_charging);
-
-	// Check to see if is_charging returns false when we claim to NOT be connected to AC or USB
-	test_battery_sysfs_path_retval = 0;
-	test_charger_usb_sysfs_path_retval = 0;
-	test_charger_ac_sysfs_path_retval = 0;
-	test_charger_touch_sysfs_path_retval = 0;
-	test_charger_wireless_sysfs_path_retval = 0;
-	// force is_charging status to true; make sure it returns false
-	resetTestChargerStatus(&testChargerStatus);
-	testChargerStatus.is_charging = 1;
-	g_assert_true(NYX_ERROR_NONE == _charger_read_status(&testChargerStatus));
-	g_assert_true(0 == testChargerStatus.is_charging);
-
-	// NOTE: We don't bother passing NULL for status since status is checked in charger_read_status() in chargerlib.c
-}
-
-#endif
 
 void reset_battery_path_retvals(void)
 {
@@ -2397,13 +2315,153 @@ test_battery_fakemode(void)
 }
 
 //
+// Tests for the battery_deinit API method
+// nyx_error_t battery_deinit(void)
+//
+static void
+test_battery_deinit(void)
+{
+	// Everything the udev side can be asked for is available, as at the end of
+	// test_battery_init.
+	testUdevStruct_retval = &testUdevStruct;
+	testUdevMonitorStruct_retval = &testUdevMonitorStruct;
+	testUdevMonitorFilterAddMatchResult_retval = 0;
+	testUdevMonitorEnableReceiving_retval = 0;
+	testUdevMonitorGetFd_retval = 0;
+	testGIOChannel_retval = &testGIOChannel;
+	testEventSourceId_retVal = testEventSourceIdGood;
+
+	// Nothing was initialised: deinit is harmless and leaves nothing behind.
+	forget_batteries();
+	g_assert_true(NYX_ERROR_NONE == battery_deinit());
+	g_assert_true(0 == battery_count());
+	g_assert_true(0 == testGIOChannelRefcount);
+	g_assert_true(0 == testUdevRefcount);
+	g_assert_true(0 == testUdevMonitorRefcount);
+
+	// Initialised: the udev context, the monitor, the channel and the watch are
+	// all held, and so is the battery list...
+	reset_battery_path_retvals();
+	g_assert_true(NYX_ERROR_NONE == battery_init());
+	g_assert_cmpint(testUdevRefcount, >, 0);
+	g_assert_cmpint(testUdevMonitorRefcount, >, 0);
+	g_assert_cmpint(testGIOChannelRefcount, >, 0);
+	g_assert_true(battery_count() >= 1);
+
+	// ... and deinit gives every one of them back.
+	g_assert_true(NYX_ERROR_NONE == battery_deinit());
+	g_assert_true(0 == testGIOChannelRefcount);
+	g_assert_true(0 == testUdevRefcount);
+	g_assert_true(0 == testUdevMonitorRefcount);
+	g_assert_true(0 == battery_count());
+
+	// Deinit twice: there is nothing left to release, and nothing is released a
+	// second time - a reference count below zero would be exactly that.
+	g_assert_true(NYX_ERROR_NONE == battery_deinit());
+	g_assert_true(0 == testGIOChannelRefcount);
+	g_assert_true(0 == testUdevRefcount);
+	g_assert_true(0 == testUdevMonitorRefcount);
+	g_assert_true(0 == battery_count());
+
+	// Deinit does not leave the module unable to start again.
+	reset_battery_path_retvals();
+	g_assert_true(NYX_ERROR_NONE == battery_init());
+	g_assert_true(battery_count() >= 1);
+	g_assert_true(NYX_ERROR_NONE == battery_deinit());
+	g_assert_true(0 == testGIOChannelRefcount);
+	g_assert_true(0 == testUdevRefcount);
+	g_assert_true(0 == testUdevMonitorRefcount);
+	g_assert_true(0 == battery_count());
+}
+
+//
+// Tests for the battery_authenticate API method
+// bool battery_authenticate(void)
+//
+// There is nothing to authenticate against - the module says so by answering
+// true, as batterylib.c passes on to its caller - so what is worth pinning is
+// that it answers that however the supply looks and does not touch it.
+//
+static void
+test_battery_authenticate(void)
+{
+	// An ordinary battery
+	reset_battery_path_retvals();
+	test_batt_present_path_exists = true;
+	test_batt_present_path_retval = 1;
+	g_assert_true(true == battery_authenticate());
+	g_assert_true(0 == test_nyx_utils_write_size);
+
+	// A battery that reads as absent
+	reset_battery_path_retvals();
+	test_batt_present_path_exists = true;
+	test_batt_present_path_retval = 0;
+	g_assert_true(true == battery_authenticate());
+	g_assert_true(0 == test_nyx_utils_write_size);
+
+	// No battery at all
+	forget_batteries();
+	test_nyx_utils_write_size = 0;
+	g_assert_true(true == battery_authenticate());
+	g_assert_true(0 == test_nyx_utils_write_size);
+	g_assert_true(0 == battery_count());
+}
+
+//
+// Tests for the battery_set_wakeup_percent API method
+// void battery_set_wakeup_percent(int percentage)
+//
+// Not supported, and says so by doing nothing: the point of the test is that it
+// really does nothing, for any value and with or without a battery - not that
+// a value is stored or that the kernel is written to - so that a caller cannot
+// be misled into thinking a threshold has been armed.
+//
+static void
+test_battery_set_wakeup_percent(void)
+{
+	const int values[] = { G_MININT, -1, 0, 1, 50, 99, 100, 101, G_MAXINT };
+	int percent_before, count_before;
+	bool present_before;
+
+	reset_battery_path_retvals();
+	test_batt_capacity_path_exists = true;
+	test_batt_capacity_path_retval = 80;
+	test_batt_present_path_exists = true;
+	test_batt_present_path_retval = 1;
+	percent_before = battery_percent(BATTERY_PRIMARY);
+	present_before = battery_is_present(BATTERY_PRIMARY);
+	count_before = battery_count();
+	g_assert_true(80 == percent_before);
+	g_assert_true(present_before);
+
+	for (size_t i = 0; i < G_N_ELEMENTS(values); i++)
+	{
+		battery_set_wakeup_percent(values[i]);
+
+		// Nothing written, the battery list is as it was, and the readings that
+		// a threshold could have changed are unchanged
+		g_assert_true(0 == test_nyx_utils_write_size);
+		g_assert_true(count_before == battery_count());
+		g_assert_true(percent_before == battery_percent(BATTERY_PRIMARY));
+		g_assert_true(present_before == battery_is_present(BATTERY_PRIMARY));
+	}
+
+	// With no battery in the list there is nothing to arm, and no failure
+	forget_batteries();
+	test_nyx_utils_write_size = 0;
+	battery_set_wakeup_percent(50);
+	g_assert_true(0 == test_nyx_utils_write_size);
+	g_assert_true(0 == battery_count());
+}
+
+//
 // Set-up GLib, then register and run the tests.
 int main(int argc, char **argv)
 {
 	g_test_init(&argc, &argv, NULL);
 
 	g_test_add_func("/battery/device/battery_init", test_battery_init);
-	// g_test_add_func("/battery/device/battery_deinit", test_battery_deinit);
+	g_test_add_func("/battery/device/battery_deinit", test_battery_deinit);
 
 	g_test_add_func("/battery/device/battery_percent", test_battery_percent);
 	g_test_add_func("/battery/device/battery_temperature",
@@ -2434,9 +2492,12 @@ int main(int argc, char **argv)
 
 	// TODO: Add test for _handle_event() callback function?
 
-	// not currently supported by device/battery.c or emulator/fake_battery.c (stub implementations)
-	// g_test_add_func("/battery/device/battery_authenticate", test_battery_authenticate);
-	// g_test_add_func("/battery/device/battery_set_wakeup_percent", test_battery_set_wakeup_percent);
+	// Not supported by device/battery.c (stub implementations): these pin that
+	// they stay inert, not that they do anything.
+	g_test_add_func("/battery/device/battery_authenticate",
+	                test_battery_authenticate);
+	g_test_add_func("/battery/device/battery_set_wakeup_percent",
+	                test_battery_set_wakeup_percent);
 
 	return g_test_run();
 }
