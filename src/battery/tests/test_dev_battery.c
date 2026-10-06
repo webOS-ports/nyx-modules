@@ -99,7 +99,12 @@ nyx_device_callback_function_t battery_callback = &test_battery_callback;
 // nyx_conf_get_path() returns NULL and detection follows the code path the
 // tests mock, rather than whatever /etc/nyx.conf says on the build host.
 //
-#define NYX_CONF_FILE "/nonexistent/test_dev_battery/nyx.conf"
+// A test that needs the config to say something points it at a fixture with
+// test_conf_set() and puts it back afterwards.
+//
+#define TEST_NO_CONF "/nonexistent/test_dev_battery/nyx.conf"
+static const char *test_nyx_conf_file = TEST_NO_CONF;
+#define NYX_CONF_FILE test_nyx_conf_file
 
 // Pull in the unit under test
 #include "../battery.c"
@@ -724,6 +729,40 @@ gboolean g_file_test(const gchar *path, GFileTest test)
 												        g_str_has_suffix(path, "/charge_full_design"))
 												{
 													return false;
+												}
+
+												//
+												// The keyboard's battery is probed for every attribute
+												// the module resolves, and only the two capacities are
+												// mocked for it. What no test gave it does not exist -
+												// but only for the attributes the module is known to
+												// probe, so a path it should not be asking about is
+												// still caught below.
+												//
+												if (g_str_has_prefix(path, TEST_KBD_NODE "/"))
+												{
+													static const char *probed[] =
+													{
+														"capacity", "energy_now", "energy_full",
+														"energy_full_design", "charge_now",
+														"charge_counter", "temp", "voltage_now",
+														"current_now", "current_avg", "present",
+														"status", "capacity_level", "pseudo_batt",
+														"health", NULL
+													};
+
+													for (int k = 0; probed[k]; k++)
+													{
+														gchar *suffix = g_strdup_printf("/%s", probed[k]);
+														bool match = g_str_has_suffix(path, suffix);
+
+														g_free(suffix);
+
+														if (match)
+														{
+															return false;
+														}
+													}
 												}
 
 												// bad path: print error, force g_assert, and return -1
@@ -1739,6 +1778,266 @@ test_battery_full_design(/*api_test_fixture *fixture, gconstpointer unused*/)
 }
 
 //
+// Point the config lookup at a fixture holding body, or back at the file that
+// does not exist when body is NULL.
+//
+static gchar *test_conf_tmp = NULL;
+
+static void test_conf_set(const char *body)
+{
+	if (test_conf_tmp)
+	{
+		unlink(test_conf_tmp);
+		g_free(test_conf_tmp);
+		test_conf_tmp = NULL;
+	}
+
+	test_nyx_conf_file = TEST_NO_CONF;
+
+	if (body)
+	{
+		test_conf_tmp = g_strdup_printf("%s/test_dev_battery_%d.conf",
+		                                g_get_tmp_dir(), (int) getpid());
+		g_assert_true(g_file_set_contents(test_conf_tmp, body, -1, NULL));
+		test_nyx_conf_file = test_conf_tmp;
+	}
+}
+
+//
+// The driver figures of a MediaTek gauge that carries the vendor's reference
+// capacity table: charge_full in the table's unit, charge_counter that figure
+// scaled by the percentage, and charge_full_design a factor of ten below it.
+//
+static void mock_mediatek_gauge(int charge_counter)
+{
+	reset_battery_path_retvals();
+	test_batt_charge_full_path_exists = true;
+	test_batt_charge_full_path_retval = 2946000;
+	test_batt_charge_counter_path_exists = true;
+	test_batt_charge_counter_path_retval = charge_counter;
+	test_batt_charge_full_design_path_exists = true;
+	test_batt_charge_full_design_path_retval = 294000;
+}
+
+//
+// Detect the batteries with body as the config. The generated nyx.conf always
+// names the primary battery, so a fixture does too unless it says otherwise
+// with a sysfs_path= of its own - an empty one being how a device whose
+// primary was not named looks.
+//
+static void detect_with_conf(const char *body)
+{
+	gchar *full = NULL;
+
+	if (body && !strstr(body, "sysfs_path="))
+	{
+		const char *header = "[module.battery]\n";
+
+		g_assert_true(g_str_has_prefix(body, header));
+		full = g_strdup_printf("%ssysfs_path=%s\n%s", header, TEST_BATT_NODE,
+		                       body + strlen(header));
+	}
+
+	test_conf_set(full ? full : body);
+	g_free(full);
+	battery_forget_all();
+	detect_battery_sysfs_paths();
+	g_assert_true(battery_count() >= 1);
+}
+
+//
+// Tests for the capacity keys in [module.battery]: full_capacity_mah and
+// design_capacity_mah.
+//
+static void
+test_battery_configured_capacity(void)
+{
+	// Neither key: the driver's figures are used exactly as before, and the
+	// mismatched design figure is still refused.
+	mock_mediatek_gauge(2946000);
+	detect_with_conf("[module.battery]\nfull_capacity_mah=\ndesign_capacity_mah=\n");
+	g_assert_cmpfloat_with_epsilon(battery_full40(BATTERY_PRIMARY), 2946.0, 0.001);
+	g_assert_cmpfloat_with_epsilon(battery_coulomb(BATTERY_PRIMARY), 2946.0, 0.001);
+	g_assert_true(-1 == battery_full_design(BATTERY_PRIMARY));
+
+	// ... and the fall-back to the design figure where charge_full has nothing
+	// to say is untouched.
+	reset_battery_path_retvals();
+	test_batt_charge_full_design_path_exists = true;
+	test_batt_charge_full_design_path_retval = 3080000;
+	detect_with_conf(NULL);
+	g_assert_cmpfloat_with_epsilon(battery_full40(BATTERY_PRIMARY), 3080.0, 0.001);
+
+	// The full capacity alone: charge_full is replaced and the driver's charge
+	// is corrected by the same factor, so a full pack stays full and a half
+	// full pack stays half full.
+	mock_mediatek_gauge(2946000);
+	detect_with_conf("[module.battery]\nfull_capacity_mah=5100\n");
+	g_assert_cmpfloat_with_epsilon(battery_full40(BATTERY_PRIMARY), 5100.0, 0.001);
+	g_assert_cmpfloat_with_epsilon(battery_coulomb(BATTERY_PRIMARY), 5100.0, 0.001);
+	g_assert_true(-1 == battery_full_design(BATTERY_PRIMARY));
+
+	mock_mediatek_gauge(1473000);
+	detect_with_conf("[module.battery]\nfull_capacity_mah=5100\n");
+	g_assert_cmpfloat_with_epsilon(battery_coulomb(BATTERY_PRIMARY), 2550.0, 0.001);
+
+	// No charge_full on the driver to take the factor from: the percentage is
+	// the only other statement of how full the pack is.
+	reset_battery_path_retvals();
+	test_batt_charge_counter_path_exists = true;
+	test_batt_charge_counter_path_retval = 1000000;
+	test_batt_capacity_path_exists = true;
+	test_batt_capacity_path_retval = 40;
+	detect_with_conf("[module.battery]\nfull_capacity_mah=5000\n");
+	g_assert_cmpfloat_with_epsilon(battery_coulomb(BATTERY_PRIMARY), 2000.0, 0.001);
+
+	// A driver whose only capacity is the design figure: that is the attribute
+	// that comes in a different unit, so it cannot supply the factor either -
+	// a ratio against 294 mAh would be out by exactly that unit. The percentage
+	// answers instead.
+	reset_battery_path_retvals();
+	test_batt_charge_counter_path_exists = true;
+	test_batt_charge_counter_path_retval = 1000000;
+	test_batt_charge_full_design_path_exists = true;
+	test_batt_charge_full_design_path_retval = 294000;
+	test_batt_capacity_path_exists = true;
+	test_batt_capacity_path_retval = 40;
+	detect_with_conf("[module.battery]\nfull_capacity_mah=5000\n");
+	g_assert_cmpfloat_with_epsilon(battery_coulomb(BATTERY_PRIMARY), 2000.0, 0.001);
+
+	// ... and with neither, no answer rather than a made-up one.
+	reset_battery_path_retvals();
+	test_batt_charge_counter_path_exists = true;
+	test_batt_charge_counter_path_retval = 1000000;
+	detect_with_conf("[module.battery]\nfull_capacity_mah=5000\n");
+	g_assert_true(-1 == battery_coulomb(BATTERY_PRIMARY));
+
+	// A driver with no charge to report stays unanswered whatever the config
+	// says: the key corrects a figure, it does not invent one.
+	reset_battery_path_retvals();
+	detect_with_conf("[module.battery]\nfull_capacity_mah=5100\n");
+	g_assert_true(-1 == battery_coulomb(BATTERY_PRIMARY));
+	g_assert_cmpfloat_with_epsilon(battery_full40(BATTERY_PRIMARY), 5100.0, 0.001);
+
+	// The design capacity is only taken together with the full capacity: alone
+	// it would pair the device's figure with the driver's wrong one and publish
+	// a wear figure for a pack that has none. So it is ignored, and the driver's
+	// own answer - here no answer, the units disagree - stands.
+	mock_mediatek_gauge(2946000);
+	detect_with_conf("[module.battery]\ndesign_capacity_mah=5100\n");
+	g_assert_true(-1 == battery_full_design(BATTERY_PRIMARY));
+	g_assert_cmpfloat_with_epsilon(battery_full40(BATTERY_PRIMARY), 2946.0, 0.001);
+
+	// Both together: the device's word on both, and the unit cross-check that
+	// refuses the driver's design figure does not apply to it.
+	mock_mediatek_gauge(2946000);
+	detect_with_conf("[module.battery]\nfull_capacity_mah=5100\ndesign_capacity_mah=5100\n");
+	g_assert_cmpfloat_with_epsilon(battery_full40(BATTERY_PRIMARY), 5100.0, 0.001);
+	g_assert_cmpfloat_with_epsilon(battery_full_design(BATTERY_PRIMARY), 5100.0, 0.001);
+
+	// ... including on a driver with no design attribute at all.
+	reset_battery_path_retvals();
+	detect_with_conf("[module.battery]\nfull_capacity_mah=5100\ndesign_capacity_mah=5100\n");
+	g_assert_cmpfloat_with_epsilon(battery_full_design(BATTERY_PRIMARY), 5100.0, 0.001);
+
+	// A stated figure is no answer for a battery that is not there: the node
+	// has gone, so there is no pack to have a capacity.
+	mock_mediatek_gauge(2946000);
+	detect_with_conf("[module.battery]\nfull_capacity_mah=5100\ndesign_capacity_mah=5100\n");
+	test_batt_sysfs_path_is_dir = false;
+	g_assert_true(-1 == battery_full40(BATTERY_PRIMARY));
+	g_assert_true(-1 == battery_full_design(BATTERY_PRIMARY));
+	test_batt_sysfs_path_is_dir = true;
+
+	// A primary the config did not name was found by walking the class, and
+	// may be a docked keyboard's cell: the figures are not applied to it.
+	mock_mediatek_gauge(2946000);
+	detect_with_conf("[module.battery]\nsysfs_path=\nfull_capacity_mah=5100\n"
+	                 "design_capacity_mah=5100\n");
+	g_assert_cmpfloat_with_epsilon(battery_full40(BATTERY_PRIMARY), 2946.0, 0.001);
+	g_assert_cmpfloat_with_epsilon(battery_coulomb(BATTERY_PRIMARY), 2946.0, 0.001);
+	g_assert_true(-1 == battery_full_design(BATTERY_PRIMARY));
+
+	// A measured charge_now is the pack's, not a table's: it is reported as
+	// the driver gives it, whatever full capacity the config states.
+	mock_mediatek_gauge(2946000);
+	test_batt_charge_now_path_exists = true;
+	test_batt_charge_now_path_retval = 1000000;
+	detect_with_conf("[module.battery]\nfull_capacity_mah=5100\n");
+	g_assert_cmpfloat_with_epsilon(battery_coulomb(BATTERY_PRIMARY), 1000.0, 0.001);
+
+	// A charge the pack cannot hold - the two reads behind the factor straddled
+	// a profile reload, say - is capped at a full pack.
+	mock_mediatek_gauge(5000000);
+	detect_with_conf("[module.battery]\nfull_capacity_mah=5100\n");
+	g_assert_cmpfloat_with_epsilon(battery_coulomb(BATTERY_PRIMARY), 5100.0, 0.001);
+
+	// The percentage fallback: above a hundred is rounding, not charge, and an
+	// empty pack is no answer rather than a measured zero.
+	reset_battery_path_retvals();
+	test_batt_charge_counter_path_exists = true;
+	test_batt_charge_counter_path_retval = 1000000;
+	test_batt_capacity_path_exists = true;
+	test_batt_capacity_path_retval = 150;
+	detect_with_conf("[module.battery]\nfull_capacity_mah=5000\n");
+	g_assert_cmpfloat_with_epsilon(battery_coulomb(BATTERY_PRIMARY), 5000.0, 0.001);
+	test_batt_capacity_path_retval = 0;
+	g_assert_true(-1 == battery_coulomb(BATTERY_PRIMARY));
+
+	// Values that are not a capacity in mAh are ignored, not half-parsed: a
+	// trailing unit, a sign, zero, a fraction, an overflow, and a figure beyond
+	// any pack there is.
+	const char *bad[] = { "abc", "-5", "0", "5100mAh", "5100.5", "1000001",
+	                      "99999999999999999999", NULL
+	                    };
+
+	for (int i = 0; bad[i]; i++)
+	{
+		gchar *body = g_strdup_printf(
+		                  "[module.battery]\nfull_capacity_mah=%s\n"
+		                  "design_capacity_mah=%s\n", bad[i], bad[i]);
+
+		mock_mediatek_gauge(2946000);
+		detect_with_conf(body);
+		g_assert_cmpfloat_with_epsilon(battery_full40(BATTERY_PRIMARY), 2946.0, 0.001);
+		g_assert_cmpfloat_with_epsilon(battery_coulomb(BATTERY_PRIMARY), 2946.0, 0.001);
+		g_assert_true(-1 == battery_full_design(BATTERY_PRIMARY));
+		g_free(body);
+	}
+
+	// The keys describe the device's own pack: an accessory battery in the same
+	// list keeps what its own driver reports.
+	mock_mediatek_gauge(2946000);
+	test_kbd_charge_full_path_exists = true;
+	test_kbd_charge_full_path_retval = 2000000;
+	test_kbd_charge_full_design_path_exists = true;
+	test_kbd_charge_full_design_path_retval = 2000000;
+	char *extras[] = { TEST_BATT_NODE, TEST_KBD_NODE, NULL };
+	test_find_power_supply_sysfs_paths_retval = extras;
+	detect_with_conf("[module.battery]\n"
+	                 "full_capacity_mah=5100\ndesign_capacity_mah=5100\n");
+	g_assert_true(2 == battery_count());
+	g_assert_cmpfloat_with_epsilon(battery_full40(BATTERY_PRIMARY), 5100.0, 0.001);
+	g_assert_cmpfloat_with_epsilon(battery_full_design(BATTERY_PRIMARY), 5100.0, 0.001);
+	g_assert_cmpfloat_with_epsilon(battery_full40(1), 2000.0, 0.001);
+	g_assert_cmpfloat_with_epsilon(battery_full_design(1), 2000.0, 0.001);
+	test_find_power_supply_sysfs_paths_retval = NULL;
+	test_kbd_charge_full_path_exists = false;
+	test_kbd_charge_full_design_path_exists = false;
+
+	// Detection is re-run on a udev change: a key removed from the config
+	// must not leave the old figure behind.
+	mock_mediatek_gauge(2946000);
+	detect_with_conf("[module.battery]\nfull_capacity_mah=5100\n");
+	g_assert_cmpfloat_with_epsilon(battery_full40(BATTERY_PRIMARY), 5100.0, 0.001);
+	detect_with_conf(NULL);
+	g_assert_cmpfloat_with_epsilon(battery_full40(BATTERY_PRIMARY), 2946.0, 0.001);
+
+	test_conf_set(NULL);
+	forget_batteries();
+}
+
+//
 // Tests for the battery_health API method
 // int battery_health(int index)
 //
@@ -2060,6 +2359,8 @@ int main(int argc, char **argv)
 	g_test_add_func("/battery/device/battery_coulomb", test_battery_coulomb);
 	g_test_add_func("/battery/device/battery_full_design",
 	                test_battery_full_design);
+	g_test_add_func("/battery/device/battery_configured_capacity",
+	                test_battery_configured_capacity);
 	g_test_add_func("/battery/device/battery_health", test_battery_health);
 	g_test_add_func("/battery/device/battery_age", test_battery_age);
 
