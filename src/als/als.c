@@ -46,6 +46,29 @@
 #define IIO_ILLUMINANCE_SCALE	"in_illuminance_scale"
 
 /*
+ * Samsung's sensor drivers (the Exynos 5420 tablets, kernel 3.4) predate IIO. A
+ * light sensor registers a "sensors" class device holding raw_data, the four
+ * colour channels as "red,green,blue,white", and its input node carries the
+ * enable attribute: the part measures only while that is 1. The channel used is
+ * green, which is what the CM3323 datasheet specifies lux for.
+ */
+#define SAMSUNG_LIGHT_DIR	"/sys/class/sensors/light_sensor"
+#define SAMSUNG_RAW_DATA	"raw_data"
+#define SAMSUNG_INPUT_CLASS_DIR	"/sys/class/input"
+#define SAMSUNG_INPUT_NAME	"light_sensor"
+#define SAMSUNG_GREEN_INDEX	1
+#define NYX_CONF_KEY_LUX_PER_COUNT	"lux_per_count"
+
+/*
+ * Lux per count of the green channel at the integration time the driver sets
+ * (40 ms, CONF1 = 0): 0.22, which makes the 16 bit range top out at 14.4 klux, as
+ * the CM3323 datasheet gives it. From the datasheet, not measured on a tablet;
+ * module.als/lux_per_count in nyx.conf overrides it, and the cover glass is the
+ * display manager's AlsCalibration.
+ */
+#define SAMSUNG_LUX_PER_COUNT	0.22
+
+/*
  * Poll intervals behind nyx_report_rate_t. The consumer (luna-displaymanager)
  * asks for HIGH while the reading is moving between regions and drops back to
  * LOW once it has settled, so the fast rate only costs power while the light
@@ -72,6 +95,11 @@ typedef struct {
 	gboolean iio_mode;
 	gchar *iio_raw_path;
 	double iio_scale;
+
+	/* Samsung sysfs backing, on the same timerfd: raw_data is parsed, and the
+	 * sensor is switched with enable_path. iio_raw_path then holds raw_data. */
+	gboolean samsung_mode;
+	gchar *enable_path;
 	int interval_ms;
 } als_device_t;
 
@@ -192,6 +220,93 @@ static gchar *als_find_iio_path(void)
 	return found;
 }
 
+/*
+ * Find a Samsung-style light sensor: the sensors class device and, on its input
+ * node, the enable attribute. Returns the raw_data path, with *enable_path set
+ * to the enable attribute (NULL when the input node cannot be found, in which
+ * case the sensor is assumed to be running already).
+ */
+static gchar *als_find_samsung_path(gchar **enable_path)
+{
+	gchar *raw = g_build_filename(SAMSUNG_LIGHT_DIR, SAMSUNG_RAW_DATA, NULL);
+
+	*enable_path = NULL;
+
+	if (!g_file_test(raw, G_FILE_TEST_EXISTS)) {
+		g_free(raw);
+		return NULL;
+	}
+
+	GDir *dir = g_dir_open(SAMSUNG_INPUT_CLASS_DIR, 0, NULL);
+
+	if (dir == NULL)
+		return raw;
+
+	GList *names = NULL;
+	const gchar *name;
+
+	while ((name = g_dir_read_name(dir)) != NULL) {
+		if (g_str_has_prefix(name, "input"))
+			names = g_list_prepend(names, g_strdup(name));
+	}
+
+	g_dir_close(dir);
+
+	names = g_list_sort(names, (GCompareFunc) g_strcmp0);
+
+	for (GList *it = names; it != NULL && *enable_path == NULL; it = it->next) {
+		gchar *node = g_build_filename(SAMSUNG_INPUT_CLASS_DIR, (const gchar *) it->data, NULL);
+		gchar *name_path = g_build_filename(node, "name", NULL);
+		gchar *enable = g_build_filename(node, "enable", NULL);
+		gchar *contents = NULL;
+
+		if (g_file_get_contents(name_path, &contents, NULL, NULL) &&
+		    g_strcmp0(g_strstrip(contents), SAMSUNG_INPUT_NAME) == 0 &&
+		    g_file_test(enable, G_FILE_TEST_EXISTS))
+			*enable_path = g_strdup(enable);
+
+		g_free(contents);
+		g_free(enable);
+		g_free(name_path);
+		g_free(node);
+	}
+
+	g_list_free_full(names, g_free);
+
+	return raw;
+}
+
+/* The count to turn into lux: the IIO raw value, or the green channel of raw_data. */
+static gboolean als_read_raw(const als_device_t *als_device, double *raw)
+{
+	if (!als_device->samsung_mode)
+		return als_read_double(als_device->iio_raw_path, raw);
+
+	gchar *contents = NULL;
+	gboolean ok = FALSE;
+
+	if (!g_file_get_contents(als_device->iio_raw_path, &contents, NULL, NULL))
+		return FALSE;
+
+	gchar **channels = g_strsplit(g_strstrip(contents), ",", 0);
+
+	if (g_strv_length(channels) > SAMSUNG_GREEN_INDEX) {
+		errno = 0;
+		gchar *end = NULL;
+		double value = g_ascii_strtod(channels[SAMSUNG_GREEN_INDEX], &end);
+
+		if (end != channels[SAMSUNG_GREEN_INDEX] && errno == 0) {
+			*raw = value;
+			ok = TRUE;
+		}
+	}
+
+	g_strfreev(channels);
+	g_free(contents);
+
+	return ok;
+}
+
 static int als_interval_for_rate(nyx_report_rate_t rate)
 {
 	switch (rate) {
@@ -265,20 +380,38 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t** device)
 	 * the open below simply failed and the module never loaded.
 	 */
 	gchar *iio_path = als_find_iio_path();
+	gchar *samsung_enable = NULL;
+	gchar *samsung_raw = iio_path != NULL ? NULL : als_find_samsung_path(&samsung_enable);
 
-	if (iio_path != NULL) {
-		gchar *scale_path = g_build_filename(iio_path, IIO_ILLUMINANCE_SCALE, NULL);
+	if (iio_path != NULL || samsung_raw != NULL) {
+		if (iio_path != NULL) {
+			gchar *scale_path = g_build_filename(iio_path, IIO_ILLUMINANCE_SCALE, NULL);
 
-		als_device->iio_raw_path = g_build_filename(iio_path, IIO_ILLUMINANCE_RAW, NULL);
+			als_device->iio_raw_path = g_build_filename(iio_path, IIO_ILLUMINANCE_RAW, NULL);
 
-		/* scale is optional: without it the raw count is already lux. */
-		if (!als_read_double(scale_path, &als_device->iio_scale) ||
-		    als_device->iio_scale <= 0.0) {
-			als_device->iio_scale = 1.0;
+			/* scale is optional: without it the raw count is already lux. */
+			if (!als_read_double(scale_path, &als_device->iio_scale) ||
+			    als_device->iio_scale <= 0.0) {
+				als_device->iio_scale = 1.0;
+			}
+
+			g_free(scale_path);
+			g_free(iio_path);
 		}
+		else {
+			gchar *configured = nyx_conf_get_path(NYX_CONF_GROUP_ALS, NYX_CONF_KEY_LUX_PER_COUNT);
 
-		g_free(scale_path);
-		g_free(iio_path);
+			als_device->samsung_mode = TRUE;
+			als_device->iio_raw_path = samsung_raw;
+			als_device->enable_path = samsung_enable;
+			als_device->iio_scale = configured != NULL ? g_ascii_strtod(configured, NULL) : 0.0;
+
+			/* Not "<= 0.0": a NaN compares false and would reach the (int32_t) cast of the lux value. */
+			if (!isfinite(als_device->iio_scale) || !(als_device->iio_scale > 0.0))
+				als_device->iio_scale = SAMSUNG_LUX_PER_COUNT;
+
+			g_free(configured);
+		}
 
 		/*
 		 * CLOCK_BOOTTIME rather than CLOCK_MONOTONIC: it keeps counting
@@ -343,6 +476,7 @@ nyx_error_t nyx_module_close(nyx_device_t* device)
 		als_release_event((nyx_device_t*) als_device, (nyx_event_t*) als_device->current_event_ptr);
 
 	g_free(als_device->iio_raw_path);
+	g_free(als_device->enable_path);
 
 	free(als_device);
 
@@ -375,11 +509,20 @@ nyx_error_t als_set_operating_mode(nyx_device_t *device, nyx_operating_mode_t mo
 		return NYX_ERROR_INVALID_HANDLE;
 
 	if (als_device->iio_mode) {
-		/* No enable attribute to write: sampling simply stops. */
+		/* An IIO sensor has no enable attribute to write: sampling simply stops.
+		 * A Samsung one is powered down as well, so it does not run unread. */
 		switch (mode) {
 			case NYX_OPERATING_MODE_OFF:
+				if (als_device->enable_path != NULL &&
+				    !file_set_contents(als_device->enable_path, "0", 2))
+					nyx_error(MSGID_NYX_MOD_ALS_DISABLE_ERR, 0, "Failed to disable ALS sensor device");
 				return als_arm_timer(als_device, 0);
 			case NYX_OPERATING_MODE_ON:
+				if (als_device->enable_path != NULL &&
+				    !file_set_contents(als_device->enable_path, "1", 2)) {
+					nyx_error(MSGID_NYX_MOD_ALS_ENABLE_ERR, 0, "Failed to enable ALS sensor device");
+					return NYX_ERROR_INVALID_FILE_ACCESS;
+				}
 				return als_arm_timer(als_device, als_device->interval_ms);
 			default:
 				return NYX_ERROR_INVALID_VALUE;
@@ -497,7 +640,7 @@ static nyx_error_t als_get_event_iio(als_device_t *als_device, nyx_event_t **eve
 
 	g_warning("ALSNYX: reading %s (scale %.4f)", als_device->iio_raw_path, als_device->iio_scale);
 
-	if (!als_read_double(als_device->iio_raw_path, &raw)) {
+	if (!als_read_raw(als_device, &raw)) {
 		nyx_warn(MSGID_NYX_MOD_ALS_READ_EVENT_ERR, 0,
 		         "Failed to read %s", als_device->iio_raw_path);
 		return NYX_ERROR_GENERIC;
