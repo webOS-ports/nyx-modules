@@ -103,6 +103,15 @@ typedef struct
 	char capacity_level_path[PATH_LEN];
 	char fake_battery_path[PATH_LEN];
 
+	/*
+	 * What the device configuration says the pack holds, in mAh, or 0 where it
+	 * says nothing. Only the primary battery ever has either: they come from
+	 * [module.battery] in nyx.conf, which describes the device's own pack. See
+	 * battery_conf_capacity_mah().
+	 */
+	int full_capacity_mah;
+	int design_capacity_mah;
+
 	/* last values seen, so _handle_event only wakes callers on a change */
 	int last_percentage;
 	bool last_present;
@@ -218,6 +227,51 @@ static int _read_optional_value(const char *path)
 	}
 
 	return nyx_utils_read_value(path);
+}
+
+/* No pack a device carries is anywhere near a thousand amp-hours. */
+#define BATTERY_CONF_CAPACITY_MAX_MAH 1000000
+
+/*
+ * A pack capacity the device configuration states, from [module.battery] in
+ * nyx.conf, in mAh. 0 where the key is absent, empty or not a capacity, so
+ * the driver's own figure is used exactly as it was before.
+ *
+ * Some fuel gauges cannot say what their pack holds. A MediaTek gauge whose
+ * kernel carries the vendor's reference capacity table, not this pack's,
+ * exports charge_full from that table - 2946 mAh on a pack the stock gauge
+ * profile puts at about 5 Ah - and a charge_full_design in a different unit
+ * again. No amount of cross-checking the two recovers a number the driver
+ * never had, and patching every vendor driver is not something this module
+ * can do. The device's own configuration knows the pack, so it can say.
+ *
+ * It is the device's word, not a guess, which is why a stated figure is
+ * trusted over the driver's where the driver's is merely derived.
+ */
+static int battery_conf_capacity_mah(const char *key)
+{
+	gchar *value = nyx_conf_get_path("module.battery", key);
+	gchar *end = NULL;
+	gint64 mah;
+
+	if (!value)
+	{
+		return 0;
+	}
+
+	mah = g_ascii_strtoll(value, &end, 10);
+
+	if (end == value || *end != '\0' || mah <= 0
+	        || mah > BATTERY_CONF_CAPACITY_MAX_MAH)
+	{
+		nyx_warn(MSGID_NYX_MOD_BATT_CONF_CAPACITY, 0,
+		         "ignoring [module.battery] %s=%s: not a capacity in mAh",
+		         key, value);
+		mah = 0;
+	}
+
+	g_free(value);
+	return (int) mah;
 }
 
 /*
@@ -541,40 +595,83 @@ int battery_charging_state(int index)
 	return (0 == g_ascii_strcasecmp(status, "Charging")) ? 1 : 0;
 }
 
+/*
+ * What the driver's charge_full says the pack holds when full, in mAh, whatever
+ * the device configuration may say about it; -1 where there is no such
+ * attribute or it reads zero. Zero is not a capacity a present pack can have:
+ * a gauge that failed to load its profile reports it, and passing it on claims
+ * the pack holds nothing.
+ */
+static double _driver_charge_full_mah(const battery_device_t *b)
+{
+	int charge_full = -1;
+
+	if (g_file_test(b->charge_full_path, G_FILE_TEST_EXISTS))
+	{
+		charge_full = _read_optional_value(b->charge_full_path);
+	}
+
+	if (charge_full <= 0)
+	{
+		return -1;
+	}
+
+	/* Divide the value by 1000 to convert from uAh to mAh */
+	return (double) charge_full / 1000;
+}
+
+/*
+ * The same, falling back to the design figure where charge_full has nothing to
+ * say - and if that is zero too, there is no answer to give. Same reasoning as
+ * battery_coulomb().
+ */
+static double _driver_full_mah(const battery_device_t *b)
+{
+	double full = _driver_charge_full_mah(b);
+	int charge_full_design;
+
+	if (full > 0)
+	{
+		return full;
+	}
+
+	charge_full_design = _read_optional_value(b->charge_full_design_path);
+
+	if (charge_full_design <= 0)
+	{
+		return -1;
+	}
+
+	return (double) charge_full_design / 1000;
+}
+
 /**
  * @brief Read battery full capacity
  *
- * @retval Battery capacity (double)
+ * What the device configuration states, if it states one
+ * (see battery_conf_capacity_mah()), otherwise what the driver reports.
+ *
+ * A stated figure is still the answer for a battery that is there and no
+ * answer for one that is not: a primary whose node has gone reports -1, as it
+ * always did, not the capacity of a pack nobody can see.
+ *
+ * @retval Battery capacity (double), or -1 where there is none to give
  */
 double battery_full40(int index)
 {
 	battery_device_t *b = battery_at(index);
-	int charge_full;
 
 	if (!b)
 	{
 		return -1;
 	}
 
-	/*
-	 * Zero is not a capacity a present pack can have, so it is treated as the
-	 * node having nothing to say and the design figure is tried instead - and
-	 * if that is zero too, there is no answer to give. Same reasoning as
-	 * battery_coulomb(): a gauge that failed to load its profile reports 0
-	 * here, and reporting it back claims the pack holds nothing.
-	 */
-	if (!g_file_test(b->charge_full_path, G_FILE_TEST_EXISTS) ||
-	        ((charge_full = _read_optional_value(b->charge_full_path)) <= 0))
+	if (b->full_capacity_mah > 0)
 	{
-		if ((charge_full =
-		         _read_optional_value(b->charge_full_design_path)) <= 0)
-		{
-			return -1;
-		}
+		return battery_is_present(index) ? b->full_capacity_mah : -1;
 	}
 
-	/* Divide the value by 1000 to convert from uAh to mAh */
-	return (double) charge_full / 1000;
+	return _driver_full_mah(b);
 }
 
 /**
@@ -586,13 +683,33 @@ double battery_full40(int index)
  * answering the design question with the present capacity would report every
  * pack as factory fresh, which is worse than not answering.
  *
- * @retval Design capacity in mAh, or -1 where the driver does not report one.
+ * What the device configuration states, if it states one - and it only does
+ * so alongside a full capacity, see detect_battery_sysfs_paths() - otherwise
+ * what the driver reports, after the unit cross-check below.
+ *
+ * @retval Design capacity in mAh, or -1 where there is none to give: the
+ *         driver reports none, or reports one that is not in the same unit as
+ *         charge_full, or the battery is not there.
  */
 double battery_full_design(int index)
 {
 	battery_device_t *b = battery_at(index);
 	int charge_full_design, charge_full;
 	double design;
+
+	/*
+	 * The device configuration's own figure is not subject to the unit
+	 * cross-check below: that exists to catch a driver attribute nobody has
+	 * said anything about, and this one the device's configuration has. It
+	 * does not make the figure right - nothing here can check it against the
+	 * pack - which is why it is only ever taken together with the full
+	 * capacity it is to be compared with. It is also what lets a device whose
+	 * driver reports no usable design capacity say so anyway.
+	 */
+	if (b && b->design_capacity_mah > 0)
+	{
+		return battery_is_present(index) ? b->design_capacity_mah : -1;
+	}
 
 	if (!b ||
 	        (charge_full_design =
@@ -746,6 +863,11 @@ double battery_rawcoulomb(int index)
  * contradicts the percentage beside it, where -1 is the truth that this gauge
  * cannot say. Callers already treat a negative as "do not show this".
  *
+ * Where the device configuration states the pack's capacity
+ * (see battery_conf_capacity_mah()) a charge taken from charge_counter is
+ * brought into the same scale as that figure, and is never more than it. A
+ * charge_now is reported as the driver gives it.
+ *
  * @retval Battery capacity in mAh, or -1 where no node can answer
  */
 
@@ -753,6 +875,8 @@ double battery_coulomb(int index)
 {
 	battery_device_t *b = battery_at(index);
 	int charge_now, charge_counter;
+	bool from_counter = false;
+	double charge;
 
 	if (!b)
 	{
@@ -765,6 +889,7 @@ double battery_coulomb(int index)
 		         _read_optional_value(b->charge_counter_path)) >= 0)
 		{
 			charge_now = charge_counter;
+			from_counter = true;
 		}
 	}
 
@@ -774,7 +899,61 @@ double battery_coulomb(int index)
 	}
 
 	/* Divide the value by 1000 to convert from uAh to mAh */
-	return (double) charge_now / 1000;
+	charge = (double) charge_now / 1000;
+
+	/*
+	 * Where the device configuration states the pack's capacity and the charge
+	 * is the counter's, correct the counter. On the gauges the key exists for,
+	 * charge_counter is not a measurement: the driver computes it as
+	 * charge_full times the percentage, from the same wrong table, so it is in
+	 * the same wrong scale as charge_full and both want the same factor.
+	 * Reporting it against a corrected full capacity would put a pack the
+	 * percentage says is full at well under its own capacity.
+	 *
+	 * A charge_now is left alone. A driver that measures it is reading the
+	 * pack, not a table, and rescaling a correct reading by a factor taken from
+	 * the attribute that is wrong would corrupt the one figure that was right.
+	 *
+	 * Only charge_full can supply the factor. The design figure is the one
+	 * attribute known to come in a different unit (see battery_full_design()),
+	 * so a ratio against it would be wrong by exactly that unit. With no
+	 * charge_full to take the factor from, the percentage is the only other
+	 * statement of how full the pack is.
+	 */
+	if (b->full_capacity_mah > 0 && from_counter)
+	{
+		double driver_full = _driver_charge_full_mah(b);
+
+		if (driver_full > 0)
+		{
+			charge = charge * b->full_capacity_mah / driver_full;
+		}
+		else
+		{
+			int percent = battery_percent(index);
+
+			if (percent < 0)
+			{
+				return -1;
+			}
+
+			charge = (double) b->full_capacity_mah * percent / 100;
+		}
+	}
+
+	/*
+	 * The two readings behind the factor are taken a moment apart, and a gauge
+	 * that reloads its profile between them would hand back a charge the pack
+	 * cannot hold - or a percentage above a hundred on the fallback above.
+	 * Never report more than a full pack, and - as above - no charge at all as
+	 * no answer, not as a measurement.
+	 */
+	if (b->full_capacity_mah > 0 && charge > b->full_capacity_mah)
+	{
+		charge = b->full_capacity_mah;
+	}
+
+	return (charge > 0) ? charge : -1;
 }
 
 /**
@@ -1079,16 +1258,19 @@ static void detect_battery_sysfs_paths(void)
 {
 	gchar *primary_path;
 	char **all_batteries;
+	bool primary_pinned;
 	int i;
 
 	battery_forget_all();
 
 	/* Runtime value from luneos-device-config wins over both. */
 	primary_path = nyx_conf_get_path("module.battery", "sysfs_path");
+	primary_pinned = (primary_path != NULL);
 
 	if (!primary_path)
 	{
 #ifdef BATTERY_SYSFS_PATH
+		primary_pinned = true;
 		/*
 		 * Honour the BATTERY_SYSFS_PATH define from the machine-specific
 		 * cmake include (e.g. meta-luneos's tenderloin.cmake). Bypasses
@@ -1137,6 +1319,48 @@ static void detect_battery_sysfs_paths(void)
 	if (0 == batteries_count)
 	{
 		battery_add("/sys/class/power_supply/battery", "main", true);
+	}
+
+	/*
+	 * The capacities in [module.battery] describe the device's own pack, which
+	 * is the primary. An accessory's cell - a keyboard's - is not covered by
+	 * them and keeps whatever its own driver reports.
+	 *
+	 * That only holds if the primary is the device's pack, and only a primary
+	 * the configuration or the build named is known to be: one found by the
+	 * directory walk is whichever Battery supply the filesystem lists first,
+	 * which with a keyboard docked may be the keyboard's. So the figures are
+	 * taken for a named primary only, and left unused - with a word about why -
+	 * where the primary was guessed.
+	 *
+	 * The design capacity is only ever taken together with the full capacity.
+	 * Either one alone pairs a figure the device states with one the driver
+	 * does, and where the driver is the wrong one - the reason for having the
+	 * keys - the pair comes out as a wear figure for a pack that has none.
+	 */
+	if (batteries_count > 0)
+	{
+		int full = battery_conf_capacity_mah("full_capacity_mah");
+		int design = battery_conf_capacity_mah("design_capacity_mah");
+
+		if ((full > 0 || design > 0) && !primary_pinned)
+		{
+			nyx_warn(MSGID_NYX_MOD_BATT_CONF_CAPACITY, 0,
+			         "ignoring the capacities in [module.battery]: the primary "
+			         "battery %s was not named by sysfs_path, so it may not be "
+			         "the device's own pack", batteries[BATTERY_PRIMARY].sysfs_path);
+			full = design = 0;
+		}
+		else if (design > 0 && full <= 0)
+		{
+			nyx_warn(MSGID_NYX_MOD_BATT_CONF_CAPACITY, 0,
+			         "ignoring [module.battery] design_capacity_mah: it is only "
+			         "taken together with full_capacity_mah");
+			design = 0;
+		}
+
+		batteries[BATTERY_PRIMARY].full_capacity_mah = full;
+		batteries[BATTERY_PRIMARY].design_capacity_mah = design;
 	}
 
 	for (i = 0; i < batteries_count; i++)
