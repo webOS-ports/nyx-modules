@@ -898,6 +898,31 @@ double battery_coulomb(int index)
 		return -1;
 	}
 
+	/*
+	 * A charge_now under 1 mAh beside a percentage above zero is not a
+	 * charge. Samsung's sec-battery driver puts its charging mode there
+	 * (sec_battery.c: case POWER_SUPPLY_PROP_CHARGE_NOW: val->intval =
+	 * battery->charging_mode), so a Galaxy A3 (2015) at 23% reported
+	 * 0.001 mAh. No pack that still runs a device holds less than 1 mAh, so
+	 * read such a value as no charge_now at all: the stated capacity times the
+	 * percentage where the device configuration states one, otherwise no
+	 * answer.
+	 */
+	if (!from_counter && charge_now < 1000)
+	{
+		int percent = battery_percent(index);
+
+		if (percent > 0)
+		{
+			if (b->full_capacity_mah > 0)
+			{
+				return (double) b->full_capacity_mah * percent / 100;
+			}
+
+			return -1;
+		}
+	}
+
 	/* Divide the value by 1000 to convert from uAh to mAh */
 	charge = (double) charge_now / 1000;
 
