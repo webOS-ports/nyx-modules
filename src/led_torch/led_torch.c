@@ -46,6 +46,14 @@
  * CONFIG_MTK_FLASHLIGHT (mindphone) exposes /dev/flashlight with ioctls and
  * nothing useful in /sys/class/leds. It is probed first, because a device that
  * has it has no LED-class torch node to find.
+ *
+ * Samsung is the fourth: its flash drivers (rt5033 on the Galaxy A3 (2015),
+ * and sm5701, sm5705 and others in the same vendor trees) offer the torch only
+ * as /sys/class/camera/flash/rear_flash, a write-only file that takes "1" for
+ * on and "0" for off, with no LED-class node at all. It is the last resort,
+ * after the LED class: a torch_path in nyx.conf that names a plain file rather
+ * than an LED directory is driven the same way, for a driver that puts the
+ * same switch somewhere else.
  */
 
 #include <errno.h>
@@ -74,6 +82,10 @@ NYX_DECLARE_MODULE(NYX_DEVICE_LED, "Torch");
 
 #ifndef MTK_FLASHLIGHT_DEV
 #define MTK_FLASHLIGHT_DEV "/dev/flashlight"
+#endif
+
+#ifndef SAMSUNG_REAR_FLASH
+#define SAMSUNG_REAR_FLASH "/sys/class/camera/flash/rear_flash"
 #endif
 
 /*
@@ -116,6 +128,7 @@ typedef enum
 	TORCH_BACKEND_NONE = 0,
 	TORCH_BACKEND_MTK,
 	TORCH_BACKEND_SYSFS,
+	TORCH_BACKEND_SWITCH_FILE,
 } torch_backend_t;
 
 static torch_backend_t backend = TORCH_BACKEND_NONE;
@@ -126,6 +139,10 @@ static gchar *torch_brightness_path = NULL;
 static gchar *torch_max_brightness_path = NULL;
 static gchar *torch_switch_path = NULL;
 static int torch_max_brightness = 255;
+
+/* TORCH_BACKEND_SWITCH_FILE: the file, and what was last written to it. */
+static gchar *torch_switch_file = NULL;
+static int switch_file_brightness = 0;
 
 static bool file_read_int(const gchar *path, int *value_out)
 {
@@ -499,11 +516,49 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
 		torch_dir = find_torch_node();
 	}
 
+	/*
+	 * An on/off switch file rather than an LED directory: configured as one,
+	 * or Samsung's rear_flash where the LED class has nothing.
+	 */
+	if (torch_dir && !g_file_test(torch_dir, G_FILE_TEST_IS_DIR) &&
+	        g_file_test(torch_dir, G_FILE_TEST_EXISTS))
+	{
+		torch_switch_file = torch_dir;
+		torch_dir = NULL;
+	}
+	else if (!torch_dir && access(SAMSUNG_REAR_FLASH, W_OK) == 0)
+	{
+		torch_switch_file = g_strdup(SAMSUNG_REAR_FLASH);
+	}
+
+	if (torch_switch_file)
+	{
+		dev = (nyx_device_t *)calloc(1, sizeof(nyx_device_t));
+
+		if (NULL == dev)
+		{
+			g_free(torch_switch_file);
+			torch_switch_file = NULL;
+			return NYX_ERROR_OUT_OF_MEMORY;
+		}
+
+		backend = TORCH_BACKEND_SWITCH_FILE;
+		nyx_info(MSGID_NYX_MOD_LED_NODEVICE_ERR, 0, "torch: %s (on/off switch)",
+		         torch_switch_file);
+
+		nyx_module_register_method(i, dev, NYX_LED_SET_BRIGHTNESS_MODULE_METHOD,
+		                           "led_set_brightness");
+		nyx_module_register_method(i, dev, NYX_LED_GET_BRIGHTNESS_MODULE_METHOD,
+		                           "led_get_brightness");
+		*d = dev;
+		return NYX_ERROR_NONE;
+	}
+
 	if (!torch_dir)
 	{
 		nyx_error(MSGID_NYX_MOD_LED_NODEVICE_ERR, 0,
-		          "no torch LED found under %s and none configured in [module.led] torch_path",
-		          LEDS_CLASS_DIR);
+		          "no torch LED found under %s, no %s and none configured in [module.led] torch_path",
+		          LEDS_CLASS_DIR, SAMSUNG_REAR_FLASH);
 		return NYX_ERROR_DEVICE_UNAVAILABLE;
 	}
 
@@ -562,6 +617,18 @@ nyx_error_t nyx_module_close(nyx_device_t *d)
 		mtk_fd = -1;
 	}
 
+	if (torch_switch_file)
+	{
+		if (switch_file_brightness > 0)
+		{
+			file_write_int(torch_switch_file, 0);
+		}
+
+		g_free(torch_switch_file);
+		torch_switch_file = NULL;
+		switch_file_brightness = 0;
+	}
+
 	backend = TORCH_BACKEND_NONE;
 
 	g_free(torch_brightness_path);
@@ -592,6 +659,18 @@ nyx_error_t led_set_brightness(nyx_device_handle_t handle, int32_t brightness)
 	if (backend == TORCH_BACKEND_MTK)
 	{
 		return mtk_set(brightness) ? NYX_ERROR_NONE : NYX_ERROR_INVALID_OPERATION;
+	}
+
+	if (backend == TORCH_BACKEND_SWITCH_FILE)
+	{
+		/* On or off: the switch has no brightness of its own. */
+		if (!file_write_int(torch_switch_file, brightness > 0 ? 1 : 0))
+		{
+			return NYX_ERROR_INVALID_OPERATION;
+		}
+
+		switch_file_brightness = brightness > 0 ? 100 : 0;
+		return NYX_ERROR_NONE;
 	}
 
 	/* Round rather than truncate, so 1% is not silently the same as off. */
@@ -654,6 +733,13 @@ nyx_error_t led_get_brightness(nyx_device_handle_t handle,
 		 * reason.
 		 */
 		*brightness_out_ptr = mtk_brightness;
+		return NYX_ERROR_NONE;
+	}
+
+	if (backend == TORCH_BACKEND_SWITCH_FILE)
+	{
+		/* rear_flash cannot be read back either: report what was last set. */
+		*brightness_out_ptr = switch_file_brightness;
 		return NYX_ERROR_NONE;
 	}
 

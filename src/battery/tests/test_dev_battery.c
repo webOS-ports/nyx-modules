@@ -1630,6 +1630,16 @@ test_battery_coulomb(/*api_test_fixture *fixture, gconstpointer unused*/)
 	test_batt_charge_counter_path_retval = 0;
 	g_assert_true(-1 == battery_coulomb(BATTERY_PRIMARY));
 
+	// Samsung's sec-battery puts its charging mode in charge_now: 1 on a Galaxy
+	// A3 (2015) at 23%. Under 1 mAh beside a percentage is no charge, and with
+	// no capacity stated there is nothing to derive one from.
+	reset_battery_path_retvals();
+	test_batt_charge_now_path_exists = true;
+	test_batt_charge_now_path_retval = 1;
+	test_batt_capacity_path_exists = true;
+	test_batt_capacity_path_retval = 23;
+	g_assert_true(-1 == battery_coulomb(BATTERY_PRIMARY));
+
 	forget_batteries();
 }
 
@@ -1888,6 +1898,16 @@ test_battery_configured_capacity(void)
 	test_batt_charge_counter_path_retval = 1000000;
 	detect_with_conf("[module.battery]\nfull_capacity_mah=5000\n");
 	g_assert_true(-1 == battery_coulomb(BATTERY_PRIMARY));
+
+	// The sec-battery charge_now above, on a device that states its capacity:
+	// the stated capacity times the percentage, 1900 mAh at 23%.
+	reset_battery_path_retvals();
+	test_batt_charge_now_path_exists = true;
+	test_batt_charge_now_path_retval = 1;
+	test_batt_capacity_path_exists = true;
+	test_batt_capacity_path_retval = 23;
+	detect_with_conf("[module.battery]\nfull_capacity_mah=1900\n");
+	g_assert_cmpfloat_with_epsilon(battery_coulomb(BATTERY_PRIMARY), 437.0, 0.001);
 
 	// A driver with no charge to report stays unanswered whatever the config
 	// says: the key corrects a figure, it does not invent one.
