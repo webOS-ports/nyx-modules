@@ -381,7 +381,7 @@ static nyx_error_t als_arm_timer(als_device_t *als_device, int interval_ms)
 		return NYX_ERROR_GENERIC;
 	}
 
-	g_warning("ALSNYX: armed timer fd=%d interval=%dms", als_device->fd, interval_ms);
+	g_debug("ALSNYX: armed timer fd=%d interval=%dms", als_device->fd, interval_ms);
 
 	return NYX_ERROR_NONE;
 }
@@ -675,7 +675,7 @@ static nyx_error_t als_get_event_iio(als_device_t *als_device, nyx_event_t **eve
 	if (rd != (ssize_t) sizeof(expirations)) {
 		/* Nothing pending is not an error - the caller polls this fd. */
 		if (rd < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-			g_warning("ALSNYX: get_event - timerfd not ready (EAGAIN)");
+			g_debug("ALSNYX: get_event - timerfd not ready (EAGAIN)");
 			return NYX_ERROR_NONE;
 		}
 
@@ -683,12 +683,12 @@ static nyx_error_t als_get_event_iio(als_device_t *als_device, nyx_event_t **eve
 		return NYX_ERROR_GENERIC;
 	}
 
-	g_warning("ALSNYX: timer fired, %llu expirations",
+	g_debug("ALSNYX: timer fired, %llu expirations",
 	          (unsigned long long) expirations);
 
 	double raw = 0.0;
 
-	g_warning("ALSNYX: reading %s (scale %.4f)", als_device->iio_raw_path, als_device->iio_scale);
+	g_debug("ALSNYX: reading %s (scale %.4f)", als_device->iio_raw_path, als_device->iio_scale);
 
 	if (!als_read_raw(als_device, &raw)) {
 		nyx_warn(MSGID_NYX_MOD_ALS_READ_EVENT_ERR, 0,
@@ -711,13 +711,13 @@ static nyx_error_t als_get_event_iio(als_device_t *als_device, nyx_event_t **eve
 
 	als_device->current_event_ptr->item.intensity_in_lux = lux_i;
 
-	g_warning("ALSNYX: raw=%.1f x %.4f = %.3f -> %d lux", raw,
+	g_debug("ALSNYX: raw=%.1f x %.4f = %.3f -> %d lux", raw,
 	          als_device->iio_scale, lux, lux_i);
 
 	*event = (nyx_event_t *) als_device->current_event_ptr;
 	als_device->current_event_ptr = NULL;
 
-	g_warning("ALSNYX: handing back event %p", (void *) *event);
+	g_debug("ALSNYX: handing back event %p", (void *) *event);
 
 	return NYX_ERROR_NONE;
 }
