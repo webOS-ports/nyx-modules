@@ -69,6 +69,14 @@
 #define SAMSUNG_LUX_PER_COUNT	0.22
 
 /*
+ * Light sensor drivers of other pre-IIO kernels: an I2C device whose "lux" attribute holds the
+ * reading, already in lux (the HP TouchPad's isl29023 on its 3.4 kernel). The driver keeps the
+ * part measuring, and sensorfw reads the same part, so there is nothing to switch on or off.
+ */
+#define I2C_DEVICES_DIR		"/sys/bus/i2c/devices"
+#define I2C_LUX_ATTRIBUTE	"lux"
+
+/*
  * Poll intervals behind nyx_report_rate_t. The consumer (luna-displaymanager)
  * asks for HIGH while the reading is moving between regions and drops back to
  * LOW once it has settled, so the fast rate only costs power while the light
@@ -276,6 +284,42 @@ static gchar *als_find_samsung_path(gchar **enable_path)
 	return raw;
 }
 
+/* Find an I2C light sensor with a lux attribute that reads; returns its path, or NULL. */
+static gchar *als_find_lux_attribute(void)
+{
+	GDir *dir = g_dir_open(I2C_DEVICES_DIR, 0, NULL);
+
+	if (dir == NULL)
+		return NULL;
+
+	GList *names = NULL;
+	const gchar *name;
+
+	while ((name = g_dir_read_name(dir)) != NULL)
+		names = g_list_prepend(names, g_strdup(name));
+
+	g_dir_close(dir);
+
+	names = g_list_sort(names, (GCompareFunc) g_strcmp0);
+
+	gchar *found = NULL;
+
+	for (GList *it = names; it != NULL && found == NULL; it = it->next) {
+		gchar *path = g_build_filename(I2C_DEVICES_DIR, (const gchar *) it->data,
+		                               I2C_LUX_ATTRIBUTE, NULL);
+		double value;
+
+		if (als_read_double(path, &value))
+			found = path;
+		else
+			g_free(path);
+	}
+
+	g_list_free_full(names, g_free);
+
+	return found;
+}
+
 /* The count to turn into lux: the IIO raw value, or the green channel of raw_data. */
 static gboolean als_read_raw(const als_device_t *als_device, double *raw)
 {
@@ -337,7 +381,7 @@ static nyx_error_t als_arm_timer(als_device_t *als_device, int interval_ms)
 		return NYX_ERROR_GENERIC;
 	}
 
-	g_warning("ALSNYX: armed timer fd=%d interval=%dms", als_device->fd, interval_ms);
+	g_debug("ALSNYX: armed timer fd=%d interval=%dms", als_device->fd, interval_ms);
 
 	return NYX_ERROR_NONE;
 }
@@ -382,8 +426,9 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t** device)
 	gchar *iio_path = als_find_iio_path();
 	gchar *samsung_enable = NULL;
 	gchar *samsung_raw = iio_path != NULL ? NULL : als_find_samsung_path(&samsung_enable);
+	gchar *lux_path = iio_path != NULL || samsung_raw != NULL ? NULL : als_find_lux_attribute();
 
-	if (iio_path != NULL || samsung_raw != NULL) {
+	if (iio_path != NULL || samsung_raw != NULL || lux_path != NULL) {
 		if (iio_path != NULL) {
 			gchar *scale_path = g_build_filename(iio_path, IIO_ILLUMINANCE_SCALE, NULL);
 
@@ -397,6 +442,11 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t** device)
 
 			g_free(scale_path);
 			g_free(iio_path);
+		}
+		else if (lux_path != NULL) {
+			/* Read with the IIO code: one number, already in lux. */
+			als_device->iio_raw_path = lux_path;
+			als_device->iio_scale = 1.0;
 		}
 		else {
 			gchar *configured = nyx_conf_get_path(NYX_CONF_GROUP_ALS, NYX_CONF_KEY_LUX_PER_COUNT);
@@ -625,7 +675,7 @@ static nyx_error_t als_get_event_iio(als_device_t *als_device, nyx_event_t **eve
 	if (rd != (ssize_t) sizeof(expirations)) {
 		/* Nothing pending is not an error - the caller polls this fd. */
 		if (rd < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-			g_warning("ALSNYX: get_event - timerfd not ready (EAGAIN)");
+			g_debug("ALSNYX: get_event - timerfd not ready (EAGAIN)");
 			return NYX_ERROR_NONE;
 		}
 
@@ -633,12 +683,12 @@ static nyx_error_t als_get_event_iio(als_device_t *als_device, nyx_event_t **eve
 		return NYX_ERROR_GENERIC;
 	}
 
-	g_warning("ALSNYX: timer fired, %llu expirations",
+	g_debug("ALSNYX: timer fired, %llu expirations",
 	          (unsigned long long) expirations);
 
 	double raw = 0.0;
 
-	g_warning("ALSNYX: reading %s (scale %.4f)", als_device->iio_raw_path, als_device->iio_scale);
+	g_debug("ALSNYX: reading %s (scale %.4f)", als_device->iio_raw_path, als_device->iio_scale);
 
 	if (!als_read_raw(als_device, &raw)) {
 		nyx_warn(MSGID_NYX_MOD_ALS_READ_EVENT_ERR, 0,
@@ -661,13 +711,13 @@ static nyx_error_t als_get_event_iio(als_device_t *als_device, nyx_event_t **eve
 
 	als_device->current_event_ptr->item.intensity_in_lux = lux_i;
 
-	g_warning("ALSNYX: raw=%.1f x %.4f = %.3f -> %d lux", raw,
+	g_debug("ALSNYX: raw=%.1f x %.4f = %.3f -> %d lux", raw,
 	          als_device->iio_scale, lux, lux_i);
 
 	*event = (nyx_event_t *) als_device->current_event_ptr;
 	als_device->current_event_ptr = NULL;
 
-	g_warning("ALSNYX: handing back event %p", (void *) *event);
+	g_debug("ALSNYX: handing back event %p", (void *) *event);
 
 	return NYX_ERROR_NONE;
 }
