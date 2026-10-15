@@ -248,6 +248,7 @@ static char *test_batt_health_path = "Battery/health";
 // full-capacity attributes are there.
 static char *test_kbd_charge_full_path = "Keyboard/charge_full";
 static char *test_kbd_charge_full_design_path = "Keyboard/charge_full_design";
+static char *test_kbd_current_path = "Keyboard/current_now";
 static char *test_bms_charge_full_path = "BMS/charge_full";
 static char *test_bms_charge_full_design_path = "BMS/charge_full_design";
 static char *test_batt_charge_full_path = "Battery/charge_full";
@@ -597,6 +598,7 @@ int32_t test_batt_charge_counter_path_exists = false;
 int32_t test_batt_health_path_exists = false;
 int32_t test_kbd_charge_full_path_exists = false;
 int32_t test_kbd_charge_full_design_path_exists = false;
+int32_t test_kbd_current_path_exists = false;
 int32_t test_bms_charge_full_path_exists = false;
 int32_t test_bms_charge_full_design_path_exists = false;
 int32_t test_batt_charge_full_path_exists = false;
@@ -679,6 +681,7 @@ gboolean g_file_test(const gchar *path, GFileTest test)
 														else ifMatchReturnExistsForTestPath(test_batt_health_path)
 															else ifMatchReturnExistsForTestPath(test_kbd_charge_full_path)
 																else ifMatchReturnExistsForTestPath(test_kbd_charge_full_design_path)
+																else ifMatchReturnExistsForTestPath(test_kbd_current_path)
 																	else ifMatchReturnExistsForTestPath(test_bms_charge_full_path)
 																		else ifMatchReturnExistsForTestPath(test_bms_charge_full_design_path)
 			else ifMatchReturnExistsForTestPath(test_batt_energy_full_path)
@@ -2035,6 +2038,117 @@ test_battery_configured_capacity(void)
 }
 
 //
+// The SM-T520's sec-battery driver: current_now and current_avg are the fuel
+// gauge's milliamp figures, unscaled, beside a status.
+//
+static void mock_sec_battery(double now, double avg, const char *state)
+{
+	reset_battery_path_retvals();
+	test_batt_current_path_exists = true;
+	test_batt_current_avg_path_exists = true;
+	test_batt_status_path_exists = true;
+	test_FileGetString_status_retval = 0;
+	g_strlcpy(test_FileGetString_status, state,
+	          sizeof(test_FileGetString_status));
+	test_FileGetDouble_result = 0;
+	test_FileGetDouble_retval = now;
+	test_FileGetDouble_avg_result = 0;
+	test_FileGetDouble_avg_retval = avg;
+}
+
+//
+// Tests for current_unit in [module.battery]: a driver that reports current in
+// milliamps where the power_supply ABI says microamps.
+//
+static void
+test_battery_configured_current_unit(void)
+{
+	// No key: microamps, as before - which read the tablet discharging at
+	// 281 mA as 0 mA.
+	mock_sec_battery(-281, -34, "Discharging");
+	detect_with_conf("[module.battery]\n");
+	g_assert_cmpint(battery_current(BATTERY_PRIMARY), ==, 0);
+	g_assert_cmpint(battery_avg_current(BATTERY_PRIMARY), ==, 0);
+
+	// current_unit=mA: the reading is already in milliamps.
+	mock_sec_battery(-281, -34, "Discharging");
+	detect_with_conf("[module.battery]\ncurrent_unit=mA\n");
+	g_assert_cmpint(battery_current(BATTERY_PRIMARY), ==, -281);
+	g_assert_cmpint(battery_avg_current(BATTERY_PRIMARY), ==, -34);
+
+	// ... and normalised against status like any other reading: charging is
+	// into the pack whatever sign the driver used.
+	mock_sec_battery(-400, -480, "Charging");
+	detect_with_conf("[module.battery]\ncurrent_unit=mA\n");
+	g_assert_cmpint(battery_current(BATTERY_PRIMARY), ==, 400);
+	g_assert_cmpint(battery_avg_current(BATTERY_PRIMARY), ==, 480);
+
+	// A read failure is still a failure, not a zero current.
+	mock_sec_battery(0, 0, "Discharging");
+	test_FileGetDouble_result = -1;
+	test_FileGetDouble_avg_result = -1;
+	detect_with_conf("[module.battery]\ncurrent_unit=mA\n");
+	g_assert_cmpint(battery_current(BATTERY_PRIMARY), ==, -1);
+	g_assert_cmpint(battery_avg_current(BATTERY_PRIMARY), ==, -1);
+
+	// Empty and "uA" are the ABI's microamps.
+	mock_sec_battery(-281000, -34000, "Discharging");
+	detect_with_conf("[module.battery]\ncurrent_unit=\n");
+	g_assert_cmpint(battery_current(BATTERY_PRIMARY), ==, -281);
+	mock_sec_battery(-281000, -34000, "Discharging");
+	detect_with_conf("[module.battery]\ncurrent_unit=uA\n");
+	g_assert_cmpint(battery_current(BATTERY_PRIMARY), ==, -281);
+	g_assert_cmpint(battery_avg_current(BATTERY_PRIMARY), ==, -34);
+
+	// Anything else is ignored rather than guessed at - including a unit that
+	// is only nearly right.
+	const char *bad[] = { "ma", "MA", "A", "milliamps", "1000", NULL };
+
+	for (int i = 0; bad[i]; i++)
+	{
+		gchar *body = g_strdup_printf("[module.battery]\ncurrent_unit=%s\n", bad[i]);
+
+		mock_sec_battery(-281000, -34000, "Discharging");
+		detect_with_conf(body);
+		g_assert_cmpint(battery_current(BATTERY_PRIMARY), ==, -281);
+		g_assert_cmpint(battery_avg_current(BATTERY_PRIMARY), ==, -34);
+		g_free(body);
+	}
+
+	// A primary that was not named may not be the device's own battery, so
+	// the unit is not applied to it.
+	mock_sec_battery(-281000, -34000, "Discharging");
+	detect_with_conf("[module.battery]\nsysfs_path=\ncurrent_unit=mA\n");
+	g_assert_cmpint(battery_current(BATTERY_PRIMARY), ==, -281);
+
+	// The key describes the device's own driver: an accessory battery in the
+	// same list keeps microamps. The mock answers every current_now alike, so
+	// the same reading coming out a thousand times apart is the proof.
+	mock_sec_battery(-281000, -34000, "Discharging");
+	test_batt_current_avg_path_exists = false;
+	test_kbd_current_path_exists = true;
+	char *extras[] = { TEST_BATT_NODE, TEST_KBD_NODE, NULL };
+	test_find_power_supply_sysfs_paths_retval = extras;
+	detect_with_conf("[module.battery]\ncurrent_unit=mA\n");
+	g_assert_true(2 == battery_count());
+	g_assert_cmpint(battery_current(BATTERY_PRIMARY), ==, -281000);
+	g_assert_cmpint(battery_current(1), ==, -281);
+	test_find_power_supply_sysfs_paths_retval = NULL;
+	test_kbd_current_path_exists = false;
+
+	// Detection is re-run on a udev change: a key removed from the config must
+	// not leave the old unit behind.
+	mock_sec_battery(-281, -34, "Discharging");
+	detect_with_conf("[module.battery]\ncurrent_unit=mA\n");
+	g_assert_cmpint(battery_current(BATTERY_PRIMARY), ==, -281);
+	detect_with_conf(NULL);
+	g_assert_cmpint(battery_current(BATTERY_PRIMARY), ==, 0);
+
+	test_conf_set(NULL);
+	forget_batteries();
+}
+
+//
 // Tests for the battery_health API method
 // int battery_health(int index)
 //
@@ -2498,6 +2612,8 @@ int main(int argc, char **argv)
 	                test_battery_full_design);
 	g_test_add_func("/battery/device/battery_configured_capacity",
 	                test_battery_configured_capacity);
+	g_test_add_func("/battery/device/battery_configured_current_unit",
+	                test_battery_configured_current_unit);
 	g_test_add_func("/battery/device/battery_health", test_battery_health);
 	g_test_add_func("/battery/device/battery_age", test_battery_age);
 
