@@ -36,6 +36,7 @@
 #define MSGID_NYX_MOD_BATT_TOO_MANY                                         "NYXBAT_TOO_MANY"
 #define MSGID_NYX_MOD_BATT_DESIGN_UNIT                                      "NYXBAT_DESIGN_UNIT"
 #define MSGID_NYX_MOD_BATT_CONF_CAPACITY                                    "NYXBAT_CONF_CAPACITY"
+#define MSGID_NYX_MOD_BATT_CONF_CURRENT_UNIT                                "NYXBAT_CONF_CURRENT_UNIT"
 
 /** Charger*/
 #define MSGID_NYX_MOD_CHARG_ERR                                             "NYXCHG_ERR"

@@ -112,6 +112,14 @@ typedef struct
 	int full_capacity_mah;
 	int design_capacity_mah;
 
+	/*
+	 * Whether current_now and current_avg are in milliamps rather than the
+	 * microamps the power_supply ABI defines. Only the primary battery ever
+	 * has it set, from [module.battery] in nyx.conf like the capacities. See
+	 * battery_conf_current_in_ma().
+	 */
+	bool current_in_ma;
+
 	/* last values seen, so _handle_event only wakes callers on a change */
 	int last_percentage;
 	bool last_present;
@@ -272,6 +280,44 @@ static int battery_conf_capacity_mah(const char *key)
 
 	g_free(value);
 	return (int) mah;
+}
+
+/*
+ * Whether the device configuration says the primary battery's driver reports
+ * current in milliamps: current_unit=mA in [module.battery]. Absent, empty or
+ * "uA" is the power_supply ABI's microamps, and anything else is ignored with a
+ * warning rather than guessed at.
+ *
+ * Samsung's sec-battery driver asks its fuel gauge for SEC_BATTEY_CURRENT_MA
+ * and exports the answer as current_now and current_avg unscaled, so the
+ * Galaxy Tab Pro 10.1 (SM-T520) drawing 281 mA reads current_now = -281, which
+ * the microamp arithmetic below turned into 0 mA. Nothing in the reading can
+ * tell the two units apart - a few hundred microamps and a few hundred
+ * milliamps are both plausible currents - so the device has to say.
+ */
+static bool battery_conf_current_in_ma(void)
+{
+	gchar *value = nyx_conf_get_path("module.battery", "current_unit");
+	bool in_ma = false;
+
+	if (!value)
+	{
+		return false;
+	}
+
+	if (0 == g_strcmp0(value, "mA"))
+	{
+		in_ma = true;
+	}
+	else if (*value && 0 != g_strcmp0(value, "uA"))
+	{
+		nyx_warn(MSGID_NYX_MOD_BATT_CONF_CURRENT_UNIT, 0,
+		         "ignoring [module.battery] current_unit=%s: not uA or mA",
+		         value);
+	}
+
+	g_free(value);
+	return in_ma;
 }
 
 /*
@@ -493,10 +539,11 @@ int battery_voltage(int index)
  */
 static int _read_current_mA(int index, const char *path)
 {
+	const battery_device_t *b = battery_at(index);
 	char status[STATUS_LEN];
 	double current = 0;
 
-	if (!path || !path[0] || FileGetDouble(path, &current) < 0)
+	if (!b || !path || !path[0] || FileGetDouble(path, &current) < 0)
 	{
 		return -1;
 	}
@@ -518,8 +565,14 @@ static int _read_current_mA(int index, const char *path)
 	/* Microamps, for the same reason as the voltage above: batteryd
 	 * publishes it as "current_mA". Signed, so this truncates toward zero
 	 * on both sides, which is what dropping sub-milliamp precision should
-	 * do. */
-	return (int)(current / 1000.0);
+	 * do. A driver the device configuration says reports milliamps is
+	 * already in the unit wanted (see battery_conf_current_in_ma()). */
+	if (!b->current_in_ma)
+	{
+		current /= 1000.0;
+	}
+
+	return (int) current;
 }
 
 int battery_current(int index)
@@ -1284,6 +1337,7 @@ static void detect_battery_sysfs_paths(void)
 	gchar *primary_path;
 	char **all_batteries;
 	bool primary_pinned;
+	bool in_ma;
 	int i;
 
 	battery_forget_all();
@@ -1386,6 +1440,23 @@ static void detect_battery_sysfs_paths(void)
 
 		batteries[BATTERY_PRIMARY].full_capacity_mah = full;
 		batteries[BATTERY_PRIMARY].design_capacity_mah = design;
+
+		/*
+		 * The current unit is the primary's driver's, too, and taken for a
+		 * named primary only for the same reason: on a guessed one it could
+		 * be the keyboard's driver it is applied to.
+		 */
+		in_ma = battery_conf_current_in_ma();
+
+		if (in_ma && !primary_pinned)
+		{
+			nyx_warn(MSGID_NYX_MOD_BATT_CONF_CURRENT_UNIT, 0,
+			         "ignoring [module.battery] current_unit: the primary "
+			         "battery %s was not named by sysfs_path", batteries[BATTERY_PRIMARY].sysfs_path);
+			in_ma = false;
+		}
+
+		batteries[BATTERY_PRIMARY].current_in_ma = in_ma;
 	}
 
 	for (i = 0; i < batteries_count; i++)
