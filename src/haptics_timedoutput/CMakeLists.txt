@@ -20,3 +20,4 @@ include_directories(.)
 webos_build_nyx_module(HapticsMain
 		       SOURCES haptics.c
 		       LIBRARIES ${GLIB2_LDFLAGS} ${PMLOG_LDFLAGS} ${NYXLIB_LDFLAGS} ${UDEV_LDFLAGS} -lrt -lpthread)
+add_subdirectory(tests)
