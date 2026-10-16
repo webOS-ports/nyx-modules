@@ -60,7 +60,7 @@ typedef struct {
 	int fd_ioctl;
 	struct ff_effect ff;
 	guint fulltimeoutwatch;
-	guint smalltimeoutwatch;
+	guint smalltimeoutwatch;      /* the pattern's next phase, on or off */
 	guint don;
 	guint doff;
 	gboolean on;
@@ -335,16 +335,24 @@ static gboolean toggle_timeout(gpointer data)
 
 	nyx_debug("on = %d, pulses = %d", (guint) device->on, (guint) device->pulses);
 
+	/* This source ends here whatever comes next. Every phase that follows
+	 * is kept in smalltimeoutwatch, the pulse-on one too, so that
+	 * clean_timeouts() can remove it: an untracked one fired after a
+	 * cancel and started the pattern again, with nothing left to stop it. */
+	device->smalltimeoutwatch = 0;
+
+	if (device->pulses == 0)
+		return FALSE;
+
 	if (device->on == FALSE) {
 		enable_vibrator(device, device->don);
-		g_timeout_add(device->don, toggle_timeout, device);
+		device->smalltimeoutwatch = g_timeout_add(device->don, toggle_timeout, device);
 	}
 	else {
-		device->pulses = device->pulses - 1;
-		if (device->pulses > 0) {
-			device->on = FALSE;
+		device->pulses--;
+		device->on = FALSE;
+		if (device->pulses > 0)
 			device->smalltimeoutwatch = g_timeout_add(device->doff, toggle_timeout, device);
-		}
 	}
 
 	return FALSE;
@@ -363,6 +371,9 @@ static gboolean vibrate_pattern(haptics_device_t *device, int pulses, int delay_
 	device->don = delay_on;
 	device->doff = delay_off;
 	device->pulses = pulses;
+	/* Left set by a one-shot or by the last pulse of a finished pattern;
+	 * the pattern starts with a pulse, not with a gap. */
+	device->on = FALSE;
 
 	toggle_timeout(device);
 
@@ -381,6 +392,11 @@ nyx_error_t haptics_vibrate(nyx_device_t *device, nyx_haptics_configuration_t co
 
 	switch (configuration.type) {
 	case NYX_HAPTICS_EFFECT_UNDEFINED:
+		/* A negative period or duration means nothing, and a negative
+		 * duration would end up in the unsigned pulse count. Refused, as
+		 * the hybris module refuses them. */
+		if (configuration.period < 0 || configuration.duration < 0)
+			return NYX_ERROR_INVALID_VALUE;
 		if (configuration.period > 0) {
 			pulses = configuration.duration / configuration.period;
 			delay_off = configuration.period / 2;
@@ -491,7 +507,10 @@ nyx_error_t haptics_vibrate(nyx_device_t *device, nyx_haptics_configuration_t co
 	return NYX_ERROR_NONE;
 }
 
-nyx_error_t haptics_cancel(nyx_device_t *device, int32_t id)
+/* One effect plays at a time, each new one replacing the last, so the id is
+ * not looked at: whatever plays is stopped. A caller tracking several effects
+ * has to cancel only the newest (luna-haptics does). */
+nyx_error_t haptics_cancel(nyx_device_t *device, [[maybe_unused]] int32_t id)
 {
 	haptics_device_t *haptics_device = (haptics_device_t*) device;
 
