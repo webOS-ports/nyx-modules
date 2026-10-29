@@ -15,5 +15,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 webos_build_nyx_module(DeviceInfoMain
-		       SOURCES device_info_generic.c
+		       SOURCES device_info_generic.c wifi_hwaddr.c
                        LIBRARIES ${GLIB2_LDFLAGS} ${PMLOG_LDFLAGS} ${NYXLIB_LDFLAGS} ${LIBCRYPTO_LDFLAGS} -lrt -lpthread)
+add_subdirectory(tests)

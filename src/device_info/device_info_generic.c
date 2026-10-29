@@ -37,6 +37,7 @@
 #include <nyx/nyx_module.h>
 #include <nyx/module/nyx_utils.h>
 #include "msgid.h"
+#include "wifi_hwaddr.h"
 
 // Internal device info structure
 typedef struct
@@ -60,6 +61,8 @@ static const char *const  read_eth0_mac =
     "ifconfig eth0 2>&1 | awk '/HWaddr/ {print $5}'";
 static const char *const  read_wifi_mac =
     "ifconfig wlan0 2>&1 | awk '/HWaddr/ {print $5}'";
+// The interface read_wifi_mac looks at, for connman's hardware address record
+static const char *const  wifi_ifname = "wlan0";
 
 static const char *const  read_bdaddr =
     "hcitool dev 2>&1 | awk '/hci0/ {print $2}'";
@@ -592,6 +595,30 @@ nyx_error_t device_info_query(nyx_device_handle_t d,
 			break;
 
 		case NYX_DEVICE_INFO_WIFI_ADDR:
+		{
+			// With per-network MAC addresses the interface carries the
+			// network's own address while connected, so prefer the
+			// hardware address connman recorded, and only look at the
+			// interface when there is no such record.
+			char hwaddr[WIFI_HWADDR_STR_LEN];
+
+			if (wifi_hwaddr_read(WIFI_HWADDR_DIR, wifi_ifname, WIFI_HWADDR_OWNER,
+			                     hwaddr, sizeof(hwaddr)) == 0)
+			{
+				const char *copy = strdup(hwaddr);
+
+				if (NULL == copy)
+				{
+					error = NYX_ERROR_OUT_OF_MEMORY;
+					break;
+				}
+
+				free((void *) dev->wifi_mac);
+				dev->wifi_mac = copy;
+				*dest = dev->wifi_mac;
+				break;
+			}
+
 			error = execute_read_info(read_wifi_mac, (char **)&dev->wifi_mac);
 
 			if (NYX_ERROR_NONE == error)
@@ -600,6 +627,7 @@ nyx_error_t device_info_query(nyx_device_handle_t d,
 			}
 
 			break;
+		}
 
 		case NYX_DEVICE_INFO_WIRED_ADDR:
 			error = execute_read_info(read_eth0_mac, (char **)&dev->wired_mac);
