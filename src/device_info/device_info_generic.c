@@ -33,6 +33,10 @@
 #include <string.h>
 #include <openssl/sha.h>
 #include <ctype.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <net/if.h>
+#include <net/if_arp.h>
 
 #include <nyx/nyx_module.h>
 #include <nyx/module/nyx_utils.h>
@@ -59,9 +63,8 @@ static const char *const  NDUID_PATH = WEBOS_INSTALL_EXECSTATEDIR "/nyx/nduid";
 
 static const char *const  read_eth0_mac =
     "ifconfig eth0 2>&1 | awk '/HWaddr/ {print $5}'";
-static const char *const  read_wifi_mac =
-    "ifconfig wlan0 2>&1 | awk '/HWaddr/ {print $5}'";
-// The interface read_wifi_mac looks at, for connman's hardware address record
+// The Wi-Fi interface, for connman's hardware address record and the
+// SIOCGIFHWADDR fallback
 static const char *const  wifi_ifname = "wlan0";
 
 static const char *const  read_bdaddr =
@@ -357,6 +360,60 @@ static nyx_error_t execute_read_info(const char *command, char **target)
 	return retVal;
 }
 
+/*
+* The address ifname has now, as "AA:BB:CC:DD:EE:FF". Only an Ethernet-type
+* (802.11 shows as ARPHRD_ETHER) unicast address other than all zeroes is
+* accepted. Returns 0, or -1 with out untouched.
+*/
+static int read_live_wifi_mac(const char *ifname, char *out, unsigned int out_len)
+{
+	struct ifreq ifr;
+	const unsigned char *mac;
+	unsigned char any = 0;
+	int sock, ret;
+	size_t i;
+
+	if (NULL == ifname || NULL == out || out_len < WIFI_HWADDR_STR_LEN ||
+	    strlen(ifname) >= sizeof(ifr.ifr_name))
+	{
+		return -1;
+	}
+
+	memset(&ifr, 0, sizeof(ifr));
+	memcpy(ifr.ifr_name, ifname, strlen(ifname) + 1);
+
+	sock = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+
+	if (sock < 0)
+	{
+		return -1;
+	}
+
+	ret = ioctl(sock, SIOCGIFHWADDR, &ifr);
+	close(sock);
+
+	if (ret < 0 || ifr.ifr_hwaddr.sa_family != ARPHRD_ETHER)
+	{
+		return -1;
+	}
+
+	mac = (const unsigned char *) ifr.ifr_hwaddr.sa_data;
+
+	for (i = 0; i < 6; i++)
+	{
+		any |= mac[i];
+	}
+
+	if (0 == any || (mac[0] & 0x01) != 0)
+	{
+		return -1;
+	}
+
+	snprintf(out, out_len, "%02X:%02X:%02X:%02X:%02X:%02X",
+	         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+	return 0;
+}
+
 static void trim_whitespaces(char *str)
 {
 	if (!str) return;
@@ -598,34 +655,29 @@ nyx_error_t device_info_query(nyx_device_handle_t d,
 		{
 			// With per-network MAC addresses the interface carries the
 			// network's own address while connected, so prefer the
-			// hardware address connman recorded, and only look at the
+			// hardware address connman recorded, and only ask the
 			// interface when there is no such record.
 			char hwaddr[WIFI_HWADDR_STR_LEN];
+			const char *copy;
 
-			if (wifi_hwaddr_read(WIFI_HWADDR_DIR, wifi_ifname, WIFI_HWADDR_OWNER,
-			                     hwaddr, sizeof(hwaddr)) == 0)
+			if (wifi_hwaddr_get(WIFI_HWADDR_DIR, wifi_ifname, WIFI_HWADDR_OWNER,
+			                    hwaddr, sizeof(hwaddr), read_live_wifi_mac) < 0)
 			{
-				const char *copy = strdup(hwaddr);
-
-				if (NULL == copy)
-				{
-					error = NYX_ERROR_OUT_OF_MEMORY;
-					break;
-				}
-
-				free((void *) dev->wifi_mac);
-				dev->wifi_mac = copy;
-				*dest = dev->wifi_mac;
+				error = NYX_ERROR_DEVICE_UNAVAILABLE;
 				break;
 			}
 
-			error = execute_read_info(read_wifi_mac, (char **)&dev->wifi_mac);
+			copy = strdup(hwaddr);
 
-			if (NYX_ERROR_NONE == error)
+			if (NULL == copy)
 			{
-				*dest = dev->wifi_mac;
+				error = NYX_ERROR_OUT_OF_MEMORY;
+				break;
 			}
 
+			free((void *) dev->wifi_mac);
+			dev->wifi_mac = copy;
+			*dest = dev->wifi_mac;
 			break;
 		}
 

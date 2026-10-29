@@ -15,15 +15,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // NYX_DEVICE_INFO_WIFI_ADDR: connman's hardware address record first, the
-// ifconfig output only without one.
+// interface's address (SIOCGIFHWADDR) only without one.
 
 #include <glib.h>
 #include <glib/gstdio.h>
 #include <fcntl.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <net/if.h>
+#include <net/if_arp.h>
+#include <sys/ioctl.h>
 
 #include <nyx/nyx_module.h>
 #include <nyx/module/nyx_utils.h>
@@ -36,13 +40,13 @@ static char *test_dir;
 #define WIFI_HWADDR_DIR   test_dir
 #define WIFI_HWADDR_OWNER geteuid()
 
-// What "ifconfig wlan0 | awk" prints, or NULL when it cannot run
-static const char *ifconfig_output;
-static int popen_calls;
-FILE *test_popen(const char *command, const char *mode);
-int test_pclose(FILE *fp);
-#define popen  test_popen
-#define pclose test_pclose
+// What SIOCGIFHWADDR on wlan0 answers
+static unsigned char live_mac[6];
+static unsigned short live_family;
+static int live_fail;
+static int ioctl_calls;
+int test_ioctl(int fd, unsigned long request, ...);
+#define ioctl test_ioctl
 
 #ifndef WEBOS_INSTALL_EXECSTATEDIR
 #define WEBOS_INSTALL_EXECSTATEDIR "/var/lib"
@@ -52,25 +56,26 @@ int test_pclose(FILE *fp);
 #include "../wifi_hwaddr.c"
 #include "../device_info_generic.c"
 
-#undef popen
-#undef pclose
+#undef ioctl
 
-static char ifconfig_buf[64];
-
-FILE *test_popen(const char *command, const char *mode)
+int test_ioctl(int fd, unsigned long request, ...)
 {
-	(void) mode;
-	popen_calls++;
-	g_assert_nonnull(strstr(command, "wlan0"));
-	if (ifconfig_output == NULL)
-		return NULL;
-	g_strlcpy(ifconfig_buf, ifconfig_output, sizeof(ifconfig_buf));
-	return fmemopen(ifconfig_buf, strlen(ifconfig_buf), "r");
-}
+	struct ifreq *ifr;
+	va_list ap;
 
-int test_pclose(FILE *fp)
-{
-	return fclose(fp);
+	(void) fd;
+	va_start(ap, request);
+	ifr = va_arg(ap, struct ifreq *);
+	va_end(ap);
+
+	g_assert_true(request == SIOCGIFHWADDR);
+	g_assert_cmpstr(ifr->ifr_name, ==, "wlan0");
+	ioctl_calls++;
+	if (live_fail)
+		return -1;
+	ifr->ifr_hwaddr.sa_family = live_family;
+	memcpy(ifr->ifr_hwaddr.sa_data, live_mac, sizeof(live_mac));
+	return 0;
 }
 
 nyx_error_t nyx_module_register_method(nyx_instance_t i, nyx_device_t *d,
@@ -100,9 +105,13 @@ static void set_record(const char *content, mode_t mode)
 
 static void reset(void)
 {
+	static const unsigned char mac[6] = { 0x52, 0x54, 0x00, 0xab, 0xcd, 0xef };
+
 	set_record(NULL, 0);
-	ifconfig_output = "52:54:00:12:34:56\n";
-	popen_calls = 0;
+	memcpy(live_mac, mac, sizeof(mac));
+	live_family = ARPHRD_ETHER;
+	live_fail = 0;
+	ioctl_calls = 0;
 }
 
 static const char *wifi_addr(nyx_error_t expected)
@@ -120,42 +129,64 @@ static void test_record_used(void)
 	reset();
 	set_record("02:1a:2b:3c:4d:5e 1\n", 0644);
 	g_assert_cmpstr(wifi_addr(NYX_ERROR_NONE), ==, "02:1A:2B:3C:4D:5E");
-	g_assert_cmpint(popen_calls, ==, 0);
+	g_assert_cmpint(ioctl_calls, ==, 0);
 }
 
-static void test_no_record_uses_ifconfig(void)
+static void test_no_record_uses_interface(void)
 {
 	reset();
-	g_assert_cmpstr(wifi_addr(NYX_ERROR_NONE), ==, "52:54:00:12:34:56");
-	g_assert_cmpint(popen_calls, ==, 1);
+	g_assert_cmpstr(wifi_addr(NYX_ERROR_NONE), ==, "52:54:00:AB:CD:EF");
+	g_assert_cmpint(ioctl_calls, ==, 1);
 }
 
-static void test_bad_record_uses_ifconfig(void)
+static void test_bad_record_uses_interface(void)
 {
 	reset();
 	set_record("02:11:22:33:44:55 9\n", 0644);
-	g_assert_cmpstr(wifi_addr(NYX_ERROR_NONE), ==, "52:54:00:12:34:56");
+	g_assert_cmpstr(wifi_addr(NYX_ERROR_NONE), ==, "52:54:00:AB:CD:EF");
 
 	reset();
 	set_record("02:11:22:33:44:55 1\n", 0666);
-	g_assert_cmpstr(wifi_addr(NYX_ERROR_NONE), ==, "52:54:00:12:34:56");
+	g_assert_cmpstr(wifi_addr(NYX_ERROR_NONE), ==, "52:54:00:AB:CD:EF");
 }
 
 static void test_record_then_none(void)
 {
 	reset();
-	g_assert_cmpstr(wifi_addr(NYX_ERROR_NONE), ==, "52:54:00:12:34:56");
+	g_assert_cmpstr(wifi_addr(NYX_ERROR_NONE), ==, "52:54:00:AB:CD:EF");
 	set_record("02:11:22:33:44:55 0\n", 0644);
 	g_assert_cmpstr(wifi_addr(NYX_ERROR_NONE), ==, "02:11:22:33:44:55");
 	set_record(NULL, 0);
-	g_assert_cmpstr(wifi_addr(NYX_ERROR_NONE), ==, "52:54:00:12:34:56");
+	g_assert_cmpstr(wifi_addr(NYX_ERROR_NONE), ==, "52:54:00:AB:CD:EF");
 }
 
 static void test_nothing_found(void)
 {
 	reset();
-	ifconfig_output = NULL;
+	live_fail = 1;
 	g_assert_cmpstr(wifi_addr(NYX_ERROR_DEVICE_UNAVAILABLE), ==, "");
+}
+
+static void test_bad_interface_addresses(void)
+{
+	static const unsigned char zero[6] = { 0 };
+	static const unsigned char multicast[6] = { 0x01, 0x00, 0x5e, 0x00, 0x00, 0x01 };
+
+	reset();
+	live_family = ARPHRD_IEEE80211;
+	g_assert_cmpstr(wifi_addr(NYX_ERROR_DEVICE_UNAVAILABLE), ==, "");
+
+	reset();
+	memcpy(live_mac, zero, sizeof(zero));
+	g_assert_cmpstr(wifi_addr(NYX_ERROR_DEVICE_UNAVAILABLE), ==, "");
+
+	reset();
+	memcpy(live_mac, multicast, sizeof(multicast));
+	g_assert_cmpstr(wifi_addr(NYX_ERROR_DEVICE_UNAVAILABLE), ==, "");
+
+	reset();
+	live_mac[0] = 0x02;
+	g_assert_cmpstr(wifi_addr(NYX_ERROR_NONE), ==, "02:54:00:AB:CD:EF");
 }
 
 int main(int argc, char **argv)
@@ -168,12 +199,14 @@ int main(int argc, char **argv)
 	g_assert_true(chmod(test_dir, 0755) == 0);
 
 	g_test_add_func("/device_info/wifi_addr/record_used", test_record_used);
-	g_test_add_func("/device_info/wifi_addr/no_record_uses_ifconfig",
-	                test_no_record_uses_ifconfig);
-	g_test_add_func("/device_info/wifi_addr/bad_record_uses_ifconfig",
-	                test_bad_record_uses_ifconfig);
+	g_test_add_func("/device_info/wifi_addr/no_record_uses_interface",
+	                test_no_record_uses_interface);
+	g_test_add_func("/device_info/wifi_addr/bad_record_uses_interface",
+	                test_bad_record_uses_interface);
 	g_test_add_func("/device_info/wifi_addr/record_then_none", test_record_then_none);
 	g_test_add_func("/device_info/wifi_addr/nothing_found", test_nothing_found);
+	g_test_add_func("/device_info/wifi_addr/bad_interface_addresses",
+	                test_bad_interface_addresses);
 	ret = g_test_run();
 
 	set_record(NULL, 0);
