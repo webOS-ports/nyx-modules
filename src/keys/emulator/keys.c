@@ -84,7 +84,11 @@ int lookup_key(keys_device_t *d, uint16_t keyCode, int32_t keyValue,
 			*key_type_out_ptr = NYX_KEY_TYPE_CUSTOM;
 			break;
 
-		case KEY_END:
+		/* The power key of a VM is a real KEY_POWER: the ACPI power button
+		 * (qemu's system_powerdown, VirtualBox's ACPI shutdown). End used to
+		 * stand in for it, but End is an ordinary key on a VM's keyboard,
+		 * and typing it must not switch the display off. */
+		case KEY_POWER:
 			key = NYX_KEYS_CUSTOM_KEY_POWER_ON;
 			*key_type_out_ptr = NYX_KEY_TYPE_CUSTOM;
 			break;
