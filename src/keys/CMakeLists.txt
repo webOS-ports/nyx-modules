@@ -24,3 +24,5 @@ elseif(${WEBOS_TARGET_MACHINE_IMPL} STREQUAL hardware)
 						   SOURCES keys_common.c device/keys.c
 						   LIBRARIES ${GLIB2_LDFLAGS} ${PMLOG_LDFLAGS} ${NYXLIB_LDFLAGS} -lrt -lpthread)
 endif()
+
+add_subdirectory(tests)
