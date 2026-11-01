@@ -53,6 +53,7 @@ nyx_device_callback_function_t mtp_change_callback;
 #define ANDROID_USB_SYSFS_PATH    "/sys/class/android_usb/android0"
 #define UDC_CLASS_PATH            "/sys/class/udc"
 #define MTP_DAEMON_PATH           "/usr/bin/umtprd"
+#define F_MTP_DEVICE_PATH         "/dev/mtp_usb"
 
 void mtp_init(void);
 void mtp_close(void);
@@ -184,6 +185,7 @@ static void get_state_android_usb(nyx_mass_storage_mode_state_t *state)
 	char *running;
 	char *token;
 	bool mtp_enabled = false;
+	bool in_use;
 
 	attr = read_sysfs_attr(ANDROID_USB_SYSFS_PATH "/enable");
 	if (g_strcmp0(attr, "1") != 0) {
@@ -193,13 +195,19 @@ static void get_state_android_usb(nyx_mass_storage_mode_state_t *state)
 	g_free(attr);
 
 	functions = read_sysfs_attr(ANDROID_USB_SYSFS_PATH "/functions");
+	in_use = (functions && *functions);
 	running = functions;
 	while ((token = strsep(&running, ","))) {
 		mtp_enabled |= (g_strcmp0(token, "mtp") == 0);
 	}
 	g_free(functions);
 
-	if (!mtp_enabled)
+	/* mtp only joins the list while umtprd runs (luneos-mtp-gadget): with it
+	 * in the list and nobody serving it, hosts reset the device. An empty
+	 * list is the vestigial node of a configfs device, see mtp_get_state(). */
+	if (!mtp_enabled &&
+	    !(in_use && (access(F_MTP_DEVICE_PATH, F_OK) == 0) &&
+	      (access(MTP_DAEMON_PATH, X_OK) == 0)))
 		return;
 
 	*state |= NYX_MASS_STORAGE_MODE_DRIVER_AVAILABLE;
