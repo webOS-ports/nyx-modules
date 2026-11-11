@@ -18,3 +18,7 @@
 webos_add_test(test_keypad
 		SOURCES test_keypad.c
 		LIBRARIES ${NYXLIB_LDFLAGS} ${GLIB2_LDFLAGS} ${PMLOG_LDFLAGS} ${UDEV_LDFLAGS} -ldl -lrt -lpthread)
+
+webos_add_test(test_core
+		SOURCES test_core.c
+		LIBRARIES ${NYXLIB_LDFLAGS} ${GLIB2_LDFLAGS} ${PMLOG_LDFLAGS} ${UDEV_LDFLAGS} -ldl -lrt -lpthread)
