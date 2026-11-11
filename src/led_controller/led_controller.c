@@ -116,6 +116,11 @@ static const char *const core_leds[3][3] = {
 
 enum { CHANNEL_RED = 0, CHANNEL_GREEN, CHANNEL_BLUE, CHANNEL_COUNT };
 
+/* nyx.conf keys, [module.led_controller], naming a channel the lists miss. */
+static const char *const core_conf_keys[CHANNEL_COUNT] = {
+	"red_path", "green_path", "blue_path",
+};
+
 /* An LED-class or backlight-class node we drive by writing its brightness. */
 typedef struct
 {
@@ -123,6 +128,8 @@ typedef struct
 	gchar *max_brightness;
 	gchar *trigger;
 	int max;
+	/* Trigger for a steady light: "none", or a mode the driver needs. */
+	const char *steady;
 } sysfs_light_t;
 
 static sysfs_light_t sysfs_backlight;
@@ -223,6 +230,31 @@ static bool sysfs_light_valid(const sysfs_light_t *light)
 	return light->brightness != NULL;
 }
 
+/*
+ * Whether a node's trigger attribute offers the named trigger. The attribute
+ * lists them space-separated, with the active one in brackets.
+ */
+static bool sysfs_light_offers_trigger(const gchar *path, const char *name)
+{
+	gchar *text = NULL;
+	gchar **words;
+	bool found = false;
+	int i;
+
+	if (!g_file_get_contents(path, &text, NULL, NULL))
+		return false;
+
+	words = g_strsplit_set(text, " []\n", -1);
+
+	for (i = 0; words[i] != NULL && !found; i++)
+		found = (strcmp(words[i], name) == 0);
+
+	g_strfreev(words);
+	g_free(text);
+
+	return found;
+}
+
 /* Take a node if its brightness attribute is there and writable. */
 static bool sysfs_light_take(sysfs_light_t *light, const gchar *dir)
 {
@@ -245,6 +277,17 @@ static bool sysfs_light_take(sysfs_light_t *light, const gchar *dir)
 	if (light->max <= 0)
 		light->max = 255;
 
+	/*
+	 * MediaTek's PMIC RGB drivers (mt6370, mt6360 and their kin) keep a
+	 * channel's brightness only while one of their mode triggers is active:
+	 * with no trigger, a written brightness reads back 0 and the LED stays
+	 * dark. "cc_mode" is their constant-current mode, which is a steady
+	 * light. A node that offers it gets it; every other node gets "none",
+	 * as before.
+	 */
+	light->steady = sysfs_light_offers_trigger(light->trigger, "cc_mode") ?
+	                "cc_mode" : "none";
+
 	return true;
 }
 
@@ -256,6 +299,7 @@ static void sysfs_light_release(sysfs_light_t *light)
 	light->brightness = NULL;
 	light->max_brightness = NULL;
 	light->trigger = NULL;
+	light->steady = NULL;
 }
 
 /* First of names[] that this device has under /sys/class/leds. */
@@ -392,16 +436,49 @@ static bool sysfs_backlight_probe(void)
 /*
  * The notification LED. Every channel is optional, and any one of them is enough
  * to have a light worth driving.
+ *
+ * A channel is the node named by [module.led_controller] red_path, green_path or
+ * blue_path in nyx.conf when that has a writable brightness, else the first of
+ * core_leds[] the device has. The keys are for LEDs whose names the lists cannot
+ * guess: the Unihertz Titan Pocket's MT6370 calls its channels
+ * mt6370_pmu_led1..4, and which one is which colour is a fact about the board,
+ * so luneos-device-config writes them from the adaptation's deviceinfo.
+ * *configured is set when any configured channel was taken.
  */
-static bool sysfs_core_probe(void)
+static bool sysfs_core_probe(bool *configured)
 {
 	int c;
 	bool any = false;
 
+	*configured = false;
+
 	for (c = 0; c < CHANNEL_COUNT; c++)
 	{
-		if (sysfs_light_probe_names(&sysfs_core[c], core_leds[c],
-		                            G_N_ELEMENTS(core_leds[c])))
+		gchar *conf = nyx_conf_get_path("module.led_controller", core_conf_keys[c]);
+
+		if (conf)
+		{
+			if (sysfs_light_take(&sysfs_core[c], conf))
+			{
+				*configured = true;
+				nyx_debug("Using configured notification LED channel %s (max %d, steady trigger %s)",
+				          sysfs_core[c].brightness, sysfs_core[c].max, sysfs_core[c].steady);
+			}
+			else
+			{
+				nyx_error(MSGID_NYX_MOD_LED_OPENFILE_ERR, 0,
+				          "%s %s has no writable brightness; looking elsewhere",
+				          core_conf_keys[c], conf);
+			}
+
+			g_free(conf);
+		}
+
+		if (!sysfs_light_valid(&sysfs_core[c]))
+			(void) sysfs_light_probe_names(&sysfs_core[c], core_leds[c],
+			                               G_N_ELEMENTS(core_leds[c]));
+
+		if (sysfs_light_valid(&sysfs_core[c]))
 			any = true;
 	}
 
@@ -562,6 +639,7 @@ static bool sysfs_core_set(int r, int g, int b, int ms_on, int ms_off)
 {
 	const int channel[CHANNEL_COUNT] = { r, g, b };
 	bool blink = (ms_on > 0 && ms_off > 0);
+	bool lit = (r > 0 || g > 0 || b > 0);
 	bool ok = true;
 	int c;
 
@@ -590,8 +668,30 @@ static bool sysfs_core_set(int r, int g, int b, int ms_on, int ms_off)
 				g_free(dir);
 			}
 		}
+		else if (channel[c] > 0)
+		{
+			(void) sysfs_write_str(sysfs_core[c].trigger, sysfs_core[c].steady);
+		}
+		else if (lit && strcmp(sysfs_core[c].steady, "none") != 0)
+		{
+			/*
+			 * A dark channel of a colour that is showing is held in its mode
+			 * trigger and left at zero, not released. On the Titan Pocket red
+			 * is also the charge indicator, and the kernel gives it back to
+			 * the charger once it leaves its mode trigger, so released it
+			 * would light while charging and turn a green notification
+			 * yellow. Selecting the trigger is enough: it leaves the channel
+			 * off, and writing 0 to brightness would drop the trigger again.
+			 */
+			(void) sysfs_write_str(sysfs_core[c].trigger, sysfs_core[c].steady);
+			continue;
+		}
 		else
 		{
+			/*
+			 * The light is off: every channel goes back to no trigger and 0,
+			 * which is what hands the charge indicator back to the charger.
+			 */
 			(void) sysfs_write_str(sysfs_core[c].trigger, "none");
 		}
 
@@ -744,6 +844,44 @@ static bool keypad_probe(void)
 	return have;
 }
 
+/*
+ * The notification LED: the channels named in nyx.conf, else the HAL's light,
+ * else the names in core_leds[].
+ *
+ * Configured channels win over the HAL, as keypad_path does: they are there
+ * because someone found what the HAL gets wrong on that device. Without any,
+ * the HAL keeps the light when it has one, and the sysfs channels are let go.
+ * Returns whether sysfs drives the light.
+ */
+static bool core_probe(void)
+{
+	bool configured = false;
+	bool have = sysfs_core_probe(&configured);
+
+	if (configured)
+	{
+		lights_hal_close(notifications_device);
+		notifications_device = NULL;
+	}
+	else if (notifications_device)
+	{
+		int c;
+
+		for (c = 0; c < CHANNEL_COUNT; c++)
+			sysfs_light_release(&sysfs_core[c]);
+
+		have = false;
+	}
+
+	if (have)
+		nyx_debug("Using sysfs notification LED (%s%s%s)",
+		          sysfs_light_valid(&sysfs_core[CHANNEL_RED]) ? "r" : "",
+		          sysfs_light_valid(&sysfs_core[CHANNEL_GREEN]) ? "g" : "",
+		          sysfs_light_valid(&sysfs_core[CHANNEL_BLUE]) ? "b" : "");
+
+	return have;
+}
+
 nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
 {
 	nyx_device_t *nyxDev = (nyx_device_t *) calloc(1, sizeof(nyx_device_t));
@@ -788,16 +926,7 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
 
 	have_keypad = keypad_probe();
 
-	if (!notifications_device)
-	{
-		have_sysfs_core = sysfs_core_probe();
-
-		if (have_sysfs_core)
-			nyx_debug("Using sysfs notification LED (%s%s%s)",
-			          sysfs_light_valid(&sysfs_core[CHANNEL_RED]) ? "r" : "",
-			          sysfs_light_valid(&sysfs_core[CHANNEL_GREEN]) ? "g" : "",
-			          sysfs_light_valid(&sysfs_core[CHANNEL_BLUE]) ? "b" : "");
-	}
+	have_sysfs_core = core_probe();
 
 	if (!have_backlight && !have_keypad && !notifications_device && !have_sysfs_core)
 	{
