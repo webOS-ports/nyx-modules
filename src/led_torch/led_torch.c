@@ -99,6 +99,15 @@ NYX_DECLARE_MODULE(NYX_DEVICE_LED, "Torch");
  */
 #define MTK_FLASHLIGHT_MAGIC 'S'
 
+/* The core's channel ids run 1..FLASHLIGHT_CT_MAX (3); the torch is on 1. */
+#define MTK_CT_TORCH 1
+#define MTK_CT_MAX   3
+
+/* Overridable so a host-side test can record the calls instead. */
+#ifndef TORCH_IOCTL
+#define TORCH_IOCTL ioctl
+#endif
+
 struct mtk_flashlight_user_arg
 {
 	int type_id;
@@ -209,7 +218,7 @@ static bool file_write_int(const gchar *path, int value)
 	return true;
 }
 
-static bool mtk_ioctl_quiet(unsigned long cmd, int arg)
+static bool mtk_ioctl_ct(int ct_id, unsigned long cmd, int arg)
 {
 	struct mtk_flashlight_user_arg fl_arg;
 
@@ -224,10 +233,15 @@ static bool mtk_ioctl_quiet(unsigned long cmd, int arg)
 	 * EINVAL that looks exactly like "no flashlight driver registered".
 	 */
 	fl_arg.type_id = 1;
-	fl_arg.ct_id = 1;
+	fl_arg.ct_id = ct_id;
 	fl_arg.arg = arg;
 
-	return ioctl(mtk_fd, cmd, &fl_arg) >= 0;
+	return TORCH_IOCTL(mtk_fd, cmd, &fl_arg) >= 0;
+}
+
+static bool mtk_ioctl_quiet(unsigned long cmd, int arg)
+{
+	return mtk_ioctl_ct(MTK_CT_TORCH, cmd, arg);
 }
 
 static bool mtk_ioctl(unsigned long cmd, int arg, const char *what)
@@ -272,6 +286,61 @@ static void mtk_ioctl_optional(unsigned long cmd, int arg, const char *what,
 	         what, strerror(errno));
 }
 
+/*
+ * Switch the torch channel, then give every other channel "off".
+ *
+ * A dual-channel MediaTek driver acts on pairs, not on one channel.
+ * flashlights-mt6370.c (the Titan Pocket) is the case in hand: SET_ONOFF on a
+ * channel only records it, mt6370_operate() drives the LEDs once *both* have a
+ * state - from both pending values - and then resets both to "none". The
+ * camera HAL always sets the two together and never notices. One channel on
+ * its own returns 0 and does nothing, and is worse than nothing: it stays
+ * pending, so the next caller's first channel completes a stale pair. Driving
+ * channel 1 alone, as this module used to, the torch never lit, and an "off"
+ * left half a pair behind that made the following "on" switch it off instead.
+ *
+ * So every switch, on or off, is a whole pair, ours first. Ours carries the
+ * value we want; if half a pair was left pending on another channel, ours
+ * completes it with the right value for ours and that other channel is off
+ * either way. The rest then completes a fresh pair, or, if ours already did,
+ * leaves a pending "off" that the next switch's first call completes again.
+ *
+ * The core rejects a channel the driver does not have before any driver code
+ * runs, so a single-channel driver loses nothing; it costs a kernel log line,
+ * though, so the count is learned once and not asked again.
+ */
+static int mtk_channels = 0;   /* 0 until learned */
+
+static bool mtk_switch(int on, const char *what)
+{
+	if (!mtk_ioctl(MTK_IOC_SET_ONOFF, on, what))
+	{
+		return false;
+	}
+
+	for (int ct = MTK_CT_TORCH + 1; ct <= MTK_CT_MAX; ct++)
+	{
+		if (mtk_channels && ct > mtk_channels)
+		{
+			break;
+		}
+
+		if (!mtk_ioctl_ct(ct, MTK_IOC_SET_ONOFF, 0))
+		{
+			/* Numbered from 1 without gaps: the first refusal is the end. */
+			mtk_channels = ct - 1;
+			break;
+		}
+	}
+
+	if (!mtk_channels)
+	{
+		mtk_channels = MTK_CT_MAX;
+	}
+
+	return true;
+}
+
 static bool mtk_set(int brightness)
 {
 	/*
@@ -284,7 +353,7 @@ static bool mtk_set(int brightness)
 
 	if (brightness == 0)
 	{
-		if (!mtk_ioctl(MTK_IOC_SET_ONOFF, 0, "SET_ONOFF(0)"))
+		if (!mtk_switch(0, "SET_ONOFF(0)"))
 		{
 			return false;
 		}
@@ -318,7 +387,7 @@ static bool mtk_set(int brightness)
 	                   &warned_timeout);
 	mtk_ioctl_optional(MTK_IOC_SET_DUTY, duty, "SET_DUTY", &warned_duty);
 
-	if (!mtk_ioctl(MTK_IOC_SET_ONOFF, 1, "SET_ONOFF(1)"))
+	if (!mtk_switch(1, "SET_ONOFF(1)"))
 	{
 		mtk_ioctl(MTK_IOC_X_SET_DRIVER, 0, "X_SET_DRIVER(0)");
 		return false;
