@@ -35,3 +35,5 @@ webos_build_nyx_module(MicroControllerLEDsDefault
 		       # build-time answer to condition this on, and one leaked mapping on
 		       # a machine that never opens libhardware is the cheaper mistake.
 		       -Wl,-z,nodelete)
+
+add_subdirectory(tests)

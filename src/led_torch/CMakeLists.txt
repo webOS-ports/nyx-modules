@@ -20,3 +20,5 @@ include_directories(.)
 webos_build_nyx_module(LedTorch
                        SOURCES led_torch.c
                        LIBRARIES ${GLIB2_LDFLAGS} ${PMLOG_LDFLAGS} ${NYXLIB_LDFLAGS} -lrt -lpthread)
+
+add_subdirectory(tests)

@@ -56,10 +56,14 @@
 #include <nyx/module/nyx_utils.h>
 #include <nyx/module/nyx_log.h>
 #include "msgid.h"
+#include "nyx_conf.h"
 
 NYX_DECLARE_MODULE(NYX_DEVICE_LED_CONTROLLER, "LedControllers");
 
+/* Overridable so a host-side test can point at a fixture instead. */
+#ifndef LEDS_CLASS_DIR
 #define LEDS_CLASS_DIR "/sys/class/leds"
+#endif
 
 /*
  * Display backlights that live in the LED class rather than the backlight one.
@@ -688,6 +692,58 @@ static bool core_set(int r, int g, int b, int ms_on, int ms_off)
 
 /* ------------------------------------------------------------- nyx module */
 
+/*
+ * The keyboard backlight: the one named in nyx.conf, else the HAL's, else the
+ * first of keypad_leds[] the device has.
+ *
+ * [module.led_controller] keypad_path is for a keyboard light the names above
+ * do not catch. The Unihertz Titan Pocket's is the LED its device tree calls
+ * "button-backlight" - the very name left out above because on athena it is a
+ * different light - so it can only be named per device, which
+ * luneos-device-config does from the adaptation's deviceinfo. Configured, it
+ * wins over the HAL too: it is there because someone found what the HAL and the
+ * names get wrong on that device.
+ */
+static bool keypad_probe(void)
+{
+	gchar *conf = nyx_conf_get_path("module.led_controller", "keypad_path");
+	bool have = false;
+
+	if (conf)
+	{
+		have = sysfs_light_take(&sysfs_keypad, conf);
+
+		if (have)
+		{
+			lights_hal_close(keypad_device);
+			keypad_device = NULL;
+			nyx_debug("Using configured keypad backlight %s (max %d)",
+			          sysfs_keypad.brightness, sysfs_keypad.max);
+		}
+		else
+		{
+			nyx_error(MSGID_NYX_MOD_LED_OPENFILE_ERR, 0,
+			          "keypad_path %s has no writable brightness; looking elsewhere", conf);
+		}
+
+		g_free(conf);
+
+		if (have)
+			return true;
+	}
+
+	if (keypad_device)
+		return true;
+
+	have = sysfs_light_probe_names(&sysfs_keypad, keypad_leds, G_N_ELEMENTS(keypad_leds));
+
+	if (have)
+		nyx_debug("Using sysfs keypad backlight %s (max %d)",
+		          sysfs_keypad.brightness, sysfs_keypad.max);
+
+	return have;
+}
+
 nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
 {
 	nyx_device_t *nyxDev = (nyx_device_t *) calloc(1, sizeof(nyx_device_t));
@@ -730,17 +786,7 @@ nyx_error_t nyx_module_open(nyx_instance_t i, nyx_device_t **d)
 			          sysfs_backlight.brightness, sysfs_backlight.max);
 	}
 
-	have_keypad = keypad_device != NULL;
-
-	if (!have_keypad)
-	{
-		have_keypad = sysfs_light_probe_names(&sysfs_keypad, keypad_leds,
-		                                      G_N_ELEMENTS(keypad_leds));
-
-		if (have_keypad)
-			nyx_debug("Using sysfs keypad backlight %s (max %d)",
-			          sysfs_keypad.brightness, sysfs_keypad.max);
-	}
+	have_keypad = keypad_probe();
 
 	if (!notifications_device)
 	{
